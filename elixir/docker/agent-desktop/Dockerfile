@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install --global @openai/codex
+RUN mkdir -p /root/.codex
+RUN git config --system --add safe.directory /workspace
 
 COPY desktop_entrypoint.sh /usr/local/bin/symphony-agent-desktop
 RUN chmod 755 /usr/local/bin/symphony-agent-desktop

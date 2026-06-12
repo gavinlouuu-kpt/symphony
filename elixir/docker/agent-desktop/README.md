@@ -22,16 +22,41 @@ docker build -t symphony-agent-desktop:latest elixir/docker/agent-desktop
 container:
   enabled: true
   image: symphony-agent-desktop:latest
-  # Codex inside the container needs credentials. Mount them read-only:
+  # Codex inside the container needs credentials and a container-specific config.
   extra_run_args:
     - "--volume"
     - "/home/you/.codex/auth.json:/root/.codex/auth.json:ro"
+    - "--volume"
+    - "/path/to/codex-container-config.toml:/root/.codex/config.toml:ro"
+codex:
+  read_timeout_ms: 30000
 ```
 
 The orchestrator bind-mounts each issue workspace at `/workspace` inside the
 container and publishes the noVNC port on an ephemeral host port (bound to
 `127.0.0.1` by default). The dashboard's "Agent desktops" section picks the
 URL up automatically.
+
+Use a minimal container config instead of mounting your full desktop
+`~/.codex/config.toml`. A desktop config often enables plugins or local MCP
+servers that are not needed in unattended containers and can slow or block
+`codex app-server` startup.
+
+```toml
+model = "gpt-5.4-mini"
+model_reasoning_effort = "medium"
+plan_mode_reasoning_effort = "medium"
+
+[features]
+plugins = false
+
+[projects."/workspace"]
+trust_level = "trusted"
+```
+
+The image creates `/root/.codex` and marks `/workspace` as a system-wide Git
+safe directory. This avoids Codex failing Git commands when the bind-mounted
+workspace is owned by the host user but Codex runs as root in the container.
 
 ## Security notes
 
@@ -40,6 +65,9 @@ URL up automatically.
   routable address, put an authenticating proxy in front of it.
 - Anyone with access to the dashboard can interact with the agent's desktop
   and workspace.
+- Mount `auth.json` read-only where possible. If the container must use a
+  writable Codex home for logs and state, keep that writable state separate
+  from the host's long-lived desktop config.
 
 ## Environment overrides
 

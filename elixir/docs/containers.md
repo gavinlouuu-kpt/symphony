@@ -43,6 +43,10 @@ container:
   extra_run_args:                        # appended verbatim to `docker run`
     - "--volume"
     - "/home/you/.codex/auth.json:/root/.codex/auth.json:ro"
+    - "--volume"
+    - "/path/to/codex-container-config.toml:/root/.codex/config.toml:ro"
+codex:
+  read_timeout_ms: 30000                 # allow app-server startup work to finish
 ```
 
 Build the default desktop image with:
@@ -50,6 +54,43 @@ Build the default desktop image with:
 ```bash
 docker build -t symphony-agent-desktop:latest elixir/docker/agent-desktop
 ```
+
+## Codex config for containers
+
+Mount `auth.json` into the container so Codex can authenticate, but prefer a
+container-specific `config.toml` instead of the operator's full desktop
+`~/.codex/config.toml`. Desktop configs often enable plugins, MCP servers,
+hooks, or workspace paths that are useful interactively but unnecessary for
+unattended issue agents. Those startup checks run inside the container and can
+make Symphony report `:response_timeout` before an app-server session opens.
+
+A minimal container config usually looks like this:
+
+```toml
+model = "gpt-5.4-mini"
+model_reasoning_effort = "medium"
+plan_mode_reasoning_effort = "medium"
+
+[features]
+plugins = false
+
+[projects."/workspace"]
+trust_level = "trusted"
+```
+
+Disabling the `plugins` feature prevents Codex from doing plugin marketplace
+discovery in the container. Trusting `/workspace` prevents interactive trust
+prompts for the mounted issue checkout. The default desktop image also creates
+`/root/.codex` and configures Git with:
+
+```bash
+git config --system --add safe.directory /workspace
+```
+
+That Git setting is needed because issue workspaces are bind-mounted from the
+host and are commonly owned by the host user, while Codex runs as root inside
+the default container image. Without it, Git may reject the repository with a
+"dubious ownership" error.
 
 ## Remote access over Tailscale
 
@@ -86,6 +127,34 @@ Because the noVNC endpoints are unauthenticated, binding to the Tailscale
 interface is the recommended way to do remote access: reachability is then
 governed by your tailnet ACLs rather than being open to the network.
 
+## VPN egress for container traffic
+
+Publishing noVNC on Tailscale controls how operators reach the desktop. It does
+not automatically force the container's outbound internet traffic through a
+host VPN. Docker bridge traffic follows the host routing and policy-routing
+rules that match the bridge subnet.
+
+If your Codex auth, package installs, or GitHub access depend on a host VPN,
+verify from inside the running agent container, not only from the host:
+
+```bash
+docker exec symphony-agent-<ISSUE> bash -lc \
+  'codex login status && node -e "fetch(\"https://chatgpt.com/cdn-cgi/trace\").then(r=>r.text()).then(console.log)"'
+```
+
+For a Tailscale full-tunnel setup, one common host-level pattern is to add an
+`ip rule` for Docker's bridge subnet that looks up Tailscale's routing table,
+then confirm the route from the Docker bridge perspective:
+
+```bash
+ip rule add pref 5190 from 172.17.0.0/16 lookup 52
+ip route get 1.1.1.1 from 172.17.0.2 iif docker0
+```
+
+Persist that rule with your host's network manager or a systemd oneshot unit.
+The exact table and subnet may differ across hosts, especially if you use
+custom Docker networks or a VPN other than Tailscale.
+
 ## Troubleshooting Codex errors inside containers
 
 If agent runs fail shortly after start, check the Codex app-server output
@@ -102,6 +171,13 @@ Common causes:
   Codex inside the container has no auth. Mount your `auth.json` read-only via
   `container.extra_run_args` (see above), or pass an API key env var with
   `--env`.
+- **Startup `:response_timeout` before a session appears**: Codex app-server
+  did not answer Symphony's startup request in time. Check for plugin
+  marketplace or MCP startup work inside the container with
+  `docker exec symphony-agent-<ISSUE> ps -eo pid,ppid,stat,etime,cmd`. Prefer a
+  minimal container config with `[features] plugins = false`, and raise
+  `codex.read_timeout_ms` if the app-server legitimately needs longer to
+  initialize.
 - **Sandbox errors** ("sandbox error", Landlock/seccomp failures, or every
   shell command failing with "Operation not permitted"): Codex's own sandbox
   often cannot initialize under Docker's default seccomp profile. Since the
@@ -121,6 +197,15 @@ Common causes:
   the default turn sandbox policy denies network access. Set
   `codex.turn_sandbox_policy` with `networkAccess: true` as shown in the
   repository `WORKFLOW.md`.
+- **Git reports dubious ownership for `/workspace`**: rebuild the default
+  desktop image or add `git config --system --add safe.directory /workspace`
+  to your custom image. This is expected when the workspace is owned by the
+  host user but Git runs as root inside the container.
+- **Git status shows every tracked file as deleted and untracked**: the
+  workspace checkout is damaged, often because `.git/index` is missing or was
+  truncated. Stop the issue agent and repair the checkout on the host with
+  `git reset --mixed HEAD` followed by `git restore --worktree .`, or move the
+  workspace aside and let Symphony recreate it.
 - **`codex: command not found`**: the configured `container.image` does not
   include the Codex CLI. Rebuild from `docker/agent-desktop`, which installs
   `@openai/codex` globally.
@@ -131,6 +216,9 @@ Common causes:
   dispatched to `worker.ssh_hosts` keep the existing SSH execution path.
 - Codex inside the container needs credentials; mount `auth.json` (or pass an
   API key env var) via `extra_run_args`.
+- Use a container-specific Codex config. Mounting a full desktop config can
+  import plugin, MCP, hook, and workspace settings that do not belong in an
+  unattended container.
 - The noVNC endpoint is unauthenticated. Keep `novnc_host` on `127.0.0.1`
   unless you front it with an authenticating proxy; anyone who can reach the
   port (or the dashboard embedding it) can drive the agent's desktop.
