@@ -4,7 +4,11 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
   alias SymphonyElixir.ContainerRuntime
 
   setup do
-    on_exit(fn -> Application.delete_env(:symphony_elixir, :container_command_runner) end)
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :container_command_runner)
+      Application.delete_env(:symphony_elixir, :tailscale_command_runner)
+    end)
+
     :ok
   end
 
@@ -18,6 +22,7 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
     assert settings.workspace_mount == "/workspace"
     assert settings.novnc_container_port == 6080
     assert settings.novnc_host == "127.0.0.1"
+    assert settings.novnc_advertise_host == nil
     assert settings.extra_run_args == []
 
     refute ContainerRuntime.enabled?()
@@ -80,6 +85,130 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
     assert "--publish" in run_args
     assert "127.0.0.1::6080" in run_args
     assert List.last(run_args) == "symphony-agent-desktop:latest"
+  end
+
+  test "ensure_started binds and advertises via Tailscale when novnc_host is tailscale" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_novnc_host: "tailscale"
+    )
+
+    Application.put_env(:symphony_elixir, :tailscale_command_runner, fn
+      ["ip", "-4"] -> {:ok, {"100.64.0.7\n", 0}}
+      ["status", "--json"] -> {:ok, {~s({"Self":{"DNSName":"dev-server.tail1234.ts.net."}}), 0}}
+    end)
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"ts123\n", 0}}
+        ["port" | _] -> {:ok, {"100.64.0.7:49500\n", 0}}
+      end
+    end)
+
+    assert {:ok, info} = ContainerRuntime.ensure_started("MT-30", "/tmp/workspaces/MT-30")
+
+    assert info.novnc_port == 49_500
+    assert info.novnc_url == "http://dev-server.tail1234.ts.net:49500/vnc.html?autoconnect=1&resize=scale"
+
+    assert_received {:engine_cmd, "docker", ["run" | run_args]}
+    assert "100.64.0.7::6080" in run_args
+  end
+
+  test "ensure_started falls back to the Tailscale IP in URLs when MagicDNS is unavailable" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_novnc_host: "tailscale"
+    )
+
+    Application.put_env(:symphony_elixir, :tailscale_command_runner, fn
+      ["ip", "-4"] -> {:ok, {"100.64.0.7\n", 0}}
+      ["status", "--json"] -> {:ok, {"{}", 0}}
+    end)
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn _engine, args ->
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"ts123\n", 0}}
+        ["port" | _] -> {:ok, {"100.64.0.7:49501\n", 0}}
+      end
+    end)
+
+    assert {:ok, info} = ContainerRuntime.ensure_started("MT-31", "/tmp/workspaces/MT-31")
+    assert info.novnc_url == "http://100.64.0.7:49501/vnc.html?autoconnect=1&resize=scale"
+
+    # If Tailscale becomes unavailable after the bind address was resolved,
+    # URLs fall back to the already-bound address.
+    Application.put_env(:symphony_elixir, :tailscale_command_runner, fn
+      ["ip", "-4"] ->
+        case Process.get(:tailscale_ip_calls, 0) do
+          0 ->
+            Process.put(:tailscale_ip_calls, 1)
+            {:ok, {"100.64.0.7\n", 0}}
+
+          _ ->
+            {:ok, {"Logged out.", 1}}
+        end
+
+      ["status", "--json"] ->
+        {:ok, {"{}", 0}}
+    end)
+
+    assert {:ok, info} = ContainerRuntime.ensure_started("MT-31", "/tmp/workspaces/MT-31")
+    assert info.novnc_url == "http://100.64.0.7:49501/vnc.html?autoconnect=1&resize=scale"
+  end
+
+  test "ensure_started honors an explicit advertise host, including the tailscale shorthand" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_novnc_host: "0.0.0.0",
+      container_novnc_advertise_host: "desktops.example.internal"
+    )
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn _engine, args ->
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"adv123\n", 0}}
+        ["port" | _] -> {:ok, {"0.0.0.0:49502\n", 0}}
+      end
+    end)
+
+    assert {:ok, info} = ContainerRuntime.ensure_started("MT-32", "/tmp/workspaces/MT-32")
+    assert info.novnc_url == "http://desktops.example.internal:49502/vnc.html?autoconnect=1&resize=scale"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_novnc_host: "0.0.0.0",
+      container_novnc_advertise_host: "tailscale"
+    )
+
+    Application.put_env(:symphony_elixir, :tailscale_command_runner, fn
+      ["status", "--json"] -> {:ok, {~s({"Self":{"DNSName":"dev-server.tail1234.ts.net."}}), 0}}
+    end)
+
+    assert {:ok, info} = ContainerRuntime.ensure_started("MT-32", "/tmp/workspaces/MT-32")
+    assert info.novnc_url == "http://dev-server.tail1234.ts.net:49502/vnc.html?autoconnect=1&resize=scale"
+  end
+
+  test "ensure_started surfaces Tailscale resolution failures" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_novnc_host: "tailscale"
+    )
+
+    Application.put_env(:symphony_elixir, :tailscale_command_runner, fn _args ->
+      {:error, :tailscale_not_found}
+    end)
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn _engine, _args ->
+      flunk("container engine should not be invoked when Tailscale resolution fails")
+    end)
+
+    assert {:error, :tailscale_not_found} = ContainerRuntime.ensure_started("MT-33", "/tmp/workspaces/MT-33")
   end
 
   test "ensure_started reuses a running container without starting a new one" do

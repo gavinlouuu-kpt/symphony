@@ -213,6 +213,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:workspace_mount, :string, default: "/workspace")
       field(:novnc_container_port, :integer, default: 6080)
       field(:novnc_host, :string, default: "127.0.0.1")
+      field(:novnc_advertise_host, :string)
       field(:extra_run_args, {:array, :string}, default: [])
     end
 
@@ -229,6 +230,7 @@ defmodule SymphonyElixir.Config.Schema do
           :workspace_mount,
           :novnc_container_port,
           :novnc_host,
+          :novnc_advertise_host,
           :extra_run_args
         ],
         empty_values: []

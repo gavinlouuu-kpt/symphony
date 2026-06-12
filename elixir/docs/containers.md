@@ -38,7 +38,8 @@ container:
   name_prefix: symphony-agent-           # container name = prefix + issue identifier
   workspace_mount: /workspace            # where the issue workspace is mounted
   novnc_container_port: 6080             # noVNC port inside the container
-  novnc_host: 127.0.0.1                  # host interface the noVNC port binds to
+  novnc_host: 127.0.0.1                  # host interface the noVNC port binds to ("tailscale" supported)
+  novnc_advertise_host: null             # host used in dashboard URLs (defaults to novnc_host; "tailscale" supported)
   extra_run_args:                        # appended verbatim to `docker run`
     - "--volume"
     - "/home/you/.codex/auth.json:/root/.codex/auth.json:ro"
@@ -49,6 +50,80 @@ Build the default desktop image with:
 ```bash
 docker build -t symphony-agent-desktop:latest elixir/docker/agent-desktop
 ```
+
+## Remote access over Tailscale
+
+If Symphony runs on a dev server you reach over Tailscale (e.g. Tailscale
+SSH), `127.0.0.1` URLs only work on the server itself. Set the special value
+`tailscale` to bind and advertise on your tailnet instead:
+
+```yaml
+server:
+  port: 4321
+  host: tailscale # dashboard listens on this node's Tailscale IPv4
+container:
+  enabled: true
+  novnc_host: tailscale # desktops bind to the Tailscale interface only
+```
+
+With this config:
+
+- The dashboard is served on `http://<tailscale-ip>:4321/` (open it with the
+  server's MagicDNS name or 100.x address from any device on your tailnet).
+- Each container's noVNC port is published on the Tailscale interface only —
+  not on localhost, the LAN, or the public internet.
+- Dashboard desktop URLs advertise the server's MagicDNS name when available
+  (falling back to the Tailscale IPv4), so the embedded frames work from any
+  tailnet device.
+
+Symphony resolves the address with the `tailscale` CLI (`tailscale ip -4` and
+`tailscale status --json`), so `tailscaled` must be running on the server. If
+you want different bind and URL hosts (for example bind `0.0.0.0` behind a
+reverse proxy but advertise a proxy hostname), set `novnc_advertise_host`
+explicitly; it also accepts the `tailscale` shorthand.
+
+Because the noVNC endpoints are unauthenticated, binding to the Tailscale
+interface is the recommended way to do remote access: reachability is then
+governed by your tailnet ACLs rather than being open to the network.
+
+## Troubleshooting Codex errors inside containers
+
+If agent runs fail shortly after start, check the Codex app-server output
+first — Symphony logs non-JSON Codex stream lines at warning level, and you
+can also run the command manually:
+
+```bash
+docker exec -it symphony-agent-<ISSUE> bash -lc 'cd /workspace && codex app-server'
+```
+
+Common causes:
+
+- **Missing credentials** (`401`, "Not logged in", or an immediate exit):
+  Codex inside the container has no auth. Mount your `auth.json` read-only via
+  `container.extra_run_args` (see above), or pass an API key env var with
+  `--env`.
+- **Sandbox errors** ("sandbox error", Landlock/seccomp failures, or every
+  shell command failing with "Operation not permitted"): Codex's own sandbox
+  often cannot initialize under Docker's default seccomp profile. Since the
+  per-issue container already provides the isolation boundary, the usual fix
+  is to let Codex run unsandboxed *inside* the container:
+
+  ```yaml
+  codex:
+    thread_sandbox: danger-full-access
+    approval_policy: never
+  ```
+
+  Alternatively, keep the Codex sandbox and relax the container instead, e.g.
+  `extra_run_args: ["--security-opt", "seccomp=unconfined"]` (weaker container
+  hardening; prefer the option above).
+- **Network failures during turns** (DNS errors, package installs failing):
+  the default turn sandbox policy denies network access. Set
+  `codex.turn_sandbox_policy` with `networkAccess: true` as shown in the
+  repository `WORKFLOW.md`.
+- **`codex: command not found`**: the configured `container.image` does not
+  include the Codex CLI. Rebuild from `docker/agent-desktop`, which installs
+  `@openai/codex` globally.
 
 ## Notes and caveats
 

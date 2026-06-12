@@ -3,7 +3,7 @@ defmodule SymphonyElixir.HttpServer do
   Compatibility facade that starts the Phoenix observability endpoint when enabled.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator}
+  alias SymphonyElixir.{Config, Orchestrator, Tailscale}
   alias SymphonyElixirWeb.Endpoint
 
   @secret_key_bytes 48
@@ -20,11 +20,11 @@ defmodule SymphonyElixir.HttpServer do
   def start_link(opts \\ []) do
     case Keyword.get(opts, :port, Config.server_port()) do
       port when is_integer(port) and port >= 0 ->
-        host = Keyword.get(opts, :host, Config.settings!().server.host)
         orchestrator = Keyword.get(opts, :orchestrator, Orchestrator)
         snapshot_timeout_ms = Keyword.get(opts, :snapshot_timeout_ms, 15_000)
 
-        with {:ok, ip} <- parse_host(host) do
+        with {:ok, host} <- resolve_host(Keyword.get(opts, :host, Config.settings!().server.host)),
+             {:ok, ip} <- parse_host(host) do
           endpoint_opts = [
             server: true,
             http: [ip: ip, port: port],
@@ -59,6 +59,11 @@ defmodule SymphonyElixir.HttpServer do
   catch
     :exit, _reason -> nil
   end
+
+  # "tailscale" binds the dashboard to this node's Tailscale IPv4 so it is
+  # reachable from the tailnet but not from other networks.
+  defp resolve_host("tailscale"), do: Tailscale.ipv4()
+  defp resolve_host(host), do: {:ok, host}
 
   defp parse_host({_, _, _, _} = ip), do: {:ok, ip}
   defp parse_host({_, _, _, _, _, _, _, _} = ip), do: {:ok, ip}
