@@ -28,6 +28,15 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
+# Optional: run each issue's agent in its own desktop-enabled container and
+# expose an interactive noVNC desktop per issue on the web dashboard.
+# See docs/containers.md and docker/agent-desktop for details.
+container:
+  enabled: false
+  engine: docker
+  image: symphony-agent-desktop:latest
+  workspace_mount: /workspace
+  novnc_host: 127.0.0.1
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
   approval_policy: never

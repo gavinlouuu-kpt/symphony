@@ -168,6 +168,26 @@ The observability UI now runs on a minimal Phoenix stack:
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 
+## Per-issue agent containers with virtual desktops
+
+Symphony can run each issue's agent in its own Docker/Podman container with a
+built-in virtual desktop. The dashboard then shows an "Agent desktops" section
+with one interactive noVNC frame per running issue, so you can watch — and
+interact with — each agent's desktop and workspace terminal live.
+
+```yaml
+container:
+  enabled: true
+  image: symphony-agent-desktop:latest
+  extra_run_args:
+    - "--volume"
+    - "/home/you/.codex/auth.json:/root/.codex/auth.json:ro"
+```
+
+Build the desktop image from [`docker/agent-desktop`](docker/agent-desktop)
+and see [`docs/containers.md`](docs/containers.md) for the full configuration
+reference and security notes.
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks
