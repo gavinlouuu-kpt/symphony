@@ -106,6 +106,7 @@ defmodule SymphonyElixirWeb.Presenter do
       state: entry.state,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
+      container: container_payload(Map.get(entry, :container)),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
@@ -140,6 +141,7 @@ defmodule SymphonyElixirWeb.Presenter do
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
+      container: container_payload(Map.get(entry, :container)),
       session_id: entry.session_id,
       blocked_at: iso8601(entry.blocked_at),
       last_event: entry.last_codex_event,
@@ -152,6 +154,7 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
+      container: container_payload(Map.get(running, :container)),
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
@@ -181,6 +184,7 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       worker_host: Map.get(blocked, :worker_host),
       workspace_path: Map.get(blocked, :workspace_path),
+      container: container_payload(Map.get(blocked, :container)),
       session_id: blocked.session_id,
       state: blocked.state,
       error: blocked.error,
@@ -203,6 +207,20 @@ defmodule SymphonyElixirWeb.Presenter do
       (retry && Map.get(retry, :worker_host)) ||
       (blocked && Map.get(blocked, :worker_host))
   end
+
+  defp container_payload(%{} = container) do
+    %{
+      container_id: Map.get(container, :container_id),
+      container_name: Map.get(container, :container_name),
+      image: Map.get(container, :image),
+      engine: Map.get(container, :engine),
+      workspace_mount: Map.get(container, :workspace_mount),
+      novnc_port: Map.get(container, :novnc_port),
+      novnc_url: Map.get(container, :novnc_url)
+    }
+  end
+
+  defp container_payload(_container), do: nil
 
   defp recent_events_payload(nil), do: []
 

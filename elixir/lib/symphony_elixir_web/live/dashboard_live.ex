@@ -14,6 +14,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
+      |> assign(:focused_desktop, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -38,7 +39,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_event("focus_desktop", %{"issue" => issue_identifier}, socket) do
+    {:noreply, assign(socket, :focused_desktop, issue_identifier)}
+  end
+
+  @impl true
+  def handle_event("close_desktop", _params, socket) do
+    {:noreply, assign(socket, :focused_desktop, nil)}
+  end
+
+  @impl true
   def render(assigns) do
+    desktops = desktop_entries(assigns.payload)
+
+    assigns =
+      assigns
+      |> assign(:desktops, desktops)
+      |> assign(:focused_entry, focused_desktop_entry(desktops, assigns.focused_desktop))
+
     ~H"""
     <section class="dashboard-shell">
       <header class="hero-card">
@@ -111,6 +129,83 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
           </article>
         </section>
+
+        <%= if @desktops != [] do %>
+          <section class="section-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Agent desktops</h2>
+                <p class="section-copy">
+                  Live virtual desktop of each per-issue agent container. Frames are fully interactive — click into one to type, or expand it for a focused view.
+                </p>
+              </div>
+            </div>
+
+            <div class="desktop-grid">
+              <article :for={entry <- @desktops} class="desktop-card">
+                <header class="desktop-card-header">
+                  <div class="issue-stack">
+                    <span class="issue-id"><%= entry.issue_identifier %></span>
+                    <span class="muted mono desktop-container-name"><%= entry.container.container_name %></span>
+                  </div>
+                  <div class="desktop-card-actions">
+                    <span class={state_badge_class(entry.state)}>
+                      <%= entry.state %>
+                    </span>
+                    <button
+                      type="button"
+                      class="subtle-button"
+                      phx-click="focus_desktop"
+                      phx-value-issue={entry.issue_identifier}
+                    >
+                      Expand
+                    </button>
+                  </div>
+                </header>
+                <div class="desktop-frame-wrap">
+                  <iframe
+                    id={"desktop-frame-#{entry.issue_identifier}"}
+                    class="desktop-frame"
+                    src={entry.container.novnc_url}
+                    title={"Virtual desktop for #{entry.issue_identifier}"}
+                    allow="clipboard-read; clipboard-write"
+                  >
+                  </iframe>
+                </div>
+                <footer class="desktop-card-meta">
+                  <span class="muted">noVNC · port <span class="mono numeric"><%= entry.container.novnc_port %></span></span>
+                  <a class="issue-link" href={entry.container.novnc_url} target="_blank" rel="noopener noreferrer">
+                    Open in new tab
+                  </a>
+                </footer>
+              </article>
+            </div>
+          </section>
+        <% end %>
+
+        <%= if @focused_entry do %>
+          <div class="desktop-overlay">
+            <div class="desktop-overlay-panel">
+              <header class="desktop-overlay-header">
+                <div class="issue-stack">
+                  <span class="issue-id"><%= @focused_entry.issue_identifier %></span>
+                  <span class="muted mono"><%= @focused_entry.container.container_name %></span>
+                </div>
+                <button type="button" class="subtle-button" phx-click="close_desktop">
+                  Close
+                </button>
+              </header>
+              <iframe
+                id={"desktop-frame-focused-#{@focused_entry.issue_identifier}"}
+                class="desktop-frame desktop-frame-focused"
+                src={@focused_entry.container.novnc_url}
+                title={"Focused virtual desktop for #{@focused_entry.issue_identifier}"}
+                allow="clipboard-read; clipboard-write"
+              >
+              </iframe>
+            </div>
+          </div>
+        <% end %>
 
         <section class="section-card">
           <div class="section-header">
@@ -331,6 +426,32 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  end
+
+  defp desktop_entries(payload) do
+    running = Map.get(payload, :running) || []
+    blocked = Map.get(payload, :blocked) || []
+
+    (running ++ blocked)
+    |> Enum.filter(fn entry ->
+      case Map.get(entry, :container) do
+        %{novnc_url: novnc_url} when is_binary(novnc_url) -> true
+        _ -> false
+      end
+    end)
+    |> Enum.map(fn entry ->
+      %{
+        issue_identifier: entry.issue_identifier,
+        state: Map.get(entry, :state) || "Blocked",
+        container: entry.container
+      }
+    end)
+  end
+
+  defp focused_desktop_entry(_desktops, nil), do: nil
+
+  defp focused_desktop_entry(desktops, issue_identifier) do
+    Enum.find(desktops, &(&1.issue_identifier == issue_identifier))
   end
 
   defp orchestrator do

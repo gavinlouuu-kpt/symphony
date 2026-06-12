@@ -461,3 +461,102 @@ pre,
     padding: 1rem;
   }
 }
+
+.desktop-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(24rem, 1fr));
+  gap: 1rem;
+}
+
+.desktop-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--card-muted);
+  padding: 0.85rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.desktop-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.desktop-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.desktop-container-name {
+  font-size: 0.78rem;
+}
+
+.desktop-frame-wrap {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #14161a;
+}
+
+.desktop-frame {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border: 0;
+  background: #14161a;
+}
+
+.desktop-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.8rem;
+}
+
+.desktop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.desktop-overlay-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: min(96vw, 1280px);
+  max-height: 94vh;
+  border-radius: 16px;
+  background: var(--card);
+  padding: 1rem;
+  box-shadow: var(--shadow-lg);
+}
+
+.desktop-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.desktop-frame-focused {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  aspect-ratio: 16 / 9;
+}
+
+@media (max-width: 860px) {
+  .desktop-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -22,7 +22,8 @@ defmodule SymphonyElixir.Codex.AppServer do
           turn_sandbox_policy: map(),
           thread_id: String.t(),
           workspace: Path.t(),
-          worker_host: String.t() | nil
+          worker_host: String.t() | nil,
+          container: map() | nil
         }
 
   @spec run(Path.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -39,12 +40,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
+    container = Keyword.get(opts, :container)
 
-    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
-         {:ok, port} <- start_port(expanded_workspace, worker_host) do
+    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, container),
+         {:ok, port} <- start_port(expanded_workspace, worker_host, container) do
       metadata = port_metadata(port, worker_host)
 
-      with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
+      with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host, container),
            {:ok, thread_id} <- do_start_session(port, expanded_workspace, session_policies) do
         {:ok,
          %{
@@ -56,7 +58,8 @@ defmodule SymphonyElixir.Codex.AppServer do
            turn_sandbox_policy: session_policies.turn_sandbox_policy,
            thread_id: thread_id,
            workspace: expanded_workspace,
-           worker_host: worker_host
+           worker_host: worker_host,
+           container: container
          }}
       else
         {:error, reason} ->
@@ -144,6 +147,25 @@ defmodule SymphonyElixir.Codex.AppServer do
     stop_port(port)
   end
 
+  defp validate_workspace_cwd(workspace, _worker_host, %{container_name: container_name})
+       when is_binary(workspace) do
+    # Container workspaces are in-container mount paths; the host-side path
+    # safety checks do not apply, mirroring the remote worker behavior.
+    cond do
+      String.trim(workspace) == "" ->
+        {:error, {:invalid_workspace_cwd, :empty_container_workspace, container_name}}
+
+      String.contains?(workspace, ["\n", "\r", <<0>>]) ->
+        {:error, {:invalid_workspace_cwd, :invalid_container_workspace, container_name, workspace}}
+
+      true ->
+        {:ok, workspace}
+    end
+  end
+
+  defp validate_workspace_cwd(workspace, worker_host, _container),
+    do: validate_workspace_cwd(workspace, worker_host)
+
   defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
     expanded_root = Path.expand(Config.settings!().workspace.root)
@@ -185,6 +207,37 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:ok, workspace}
     end
   end
+
+  defp start_port(workspace, _worker_host, %{container_name: container_name, engine: engine})
+       when is_binary(workspace) do
+    case System.find_executable(engine) do
+      nil ->
+        {:error, {:container_engine_not_found, engine}}
+
+      executable ->
+        command = "cd #{shell_escape(workspace)} && exec #{Config.settings!().codex.command}"
+
+        args =
+          ["exec", "--interactive", container_name, "bash", "-lc", command]
+          |> Enum.map(&String.to_charlist/1)
+
+        port =
+          Port.open(
+            {:spawn_executable, String.to_charlist(executable)},
+            [
+              :binary,
+              :exit_status,
+              :stderr_to_stdout,
+              args: args,
+              line: @port_line_bytes
+            ]
+          )
+
+        {:ok, port}
+    end
+  end
+
+  defp start_port(workspace, worker_host, _container), do: start_port(workspace, worker_host)
 
   defp start_port(workspace, nil) do
     executable = System.find_executable("bash")
@@ -261,6 +314,12 @@ defmodule SymphonyElixir.Codex.AppServer do
       :ok
     end
   end
+
+  defp session_policies(workspace, _worker_host, %{container_name: _container_name}) do
+    Config.codex_runtime_settings(workspace, remote: true)
+  end
+
+  defp session_policies(workspace, worker_host, _container), do: session_policies(workspace, worker_host)
 
   defp session_policies(workspace, nil) do
     Config.codex_runtime_settings(workspace)

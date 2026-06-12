@@ -350,6 +350,15 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "state" => "In Progress",
                  "worker_host" => nil,
                  "workspace_path" => nil,
+                 "container" => %{
+                   "container_id" => "abc123",
+                   "container_name" => "symphony-agent-MT-HTTP",
+                   "image" => "symphony-agent-desktop:latest",
+                   "engine" => "docker",
+                   "workspace_mount" => "/workspace",
+                   "novnc_port" => 41_001,
+                   "novnc_url" => "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale"
+                 },
                  "session_id" => "thread-http",
                  "turn_count" => 7,
                  "last_event" => "notification",
@@ -378,6 +387,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "error" => "codex turn requires operator input",
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
+                 "container" => nil,
                  "session_id" => "thread-blocked",
                  "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
                  "last_event" => "turn_input_required",
@@ -409,6 +419,15 @@ defmodule SymphonyElixir.ExtensionsTest do
              "running" => %{
                "worker_host" => nil,
                "workspace_path" => nil,
+               "container" => %{
+                 "container_id" => "abc123",
+                 "container_name" => "symphony-agent-MT-HTTP",
+                 "image" => "symphony-agent-desktop:latest",
+                 "engine" => "docker",
+                 "workspace_mount" => "/workspace",
+                 "novnc_port" => 41_001,
+                 "novnc_url" => "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale"
+               },
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
@@ -585,6 +604,19 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
 
+    assert html =~ "Agent desktops"
+    assert html =~ "desktop-frame"
+    assert html =~ "http://127.0.0.1:41001/vnc.html?autoconnect=1&amp;resize=scale"
+    assert html =~ "symphony-agent-MT-HTTP"
+    refute html =~ "desktop-overlay"
+
+    focused_html = render_click(view, "focus_desktop", %{"issue" => "MT-HTTP"})
+    assert focused_html =~ "desktop-overlay"
+    assert focused_html =~ "desktop-frame-focused-MT-HTTP"
+
+    closed_html = render_click(view, "close_desktop", %{})
+    refute closed_html =~ "desktop-overlay"
+
     updated_snapshot =
       put_in(snapshot.running, [
         %{
@@ -722,6 +754,15 @@ defmodule SymphonyElixir.ExtensionsTest do
           state: "In Progress",
           session_id: "thread-http",
           turn_count: 7,
+          container: %{
+            container_id: "abc123",
+            container_name: "symphony-agent-MT-HTTP",
+            image: "symphony-agent-desktop:latest",
+            engine: "docker",
+            workspace_mount: "/workspace",
+            novnc_port: 41_001,
+            novnc_url: "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale"
+          },
           codex_app_server_pid: nil,
           last_codex_message: "rendered",
           last_codex_timestamp: nil,

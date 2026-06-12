@@ -114,6 +114,14 @@ defmodule SymphonyElixir.TestSupport do
           codex_turn_timeout_ms: 3_600_000,
           codex_read_timeout_ms: 5_000,
           codex_stall_timeout_ms: 300_000,
+          container_enabled: nil,
+          container_engine: nil,
+          container_image: nil,
+          container_name_prefix: nil,
+          container_workspace_mount: nil,
+          container_novnc_container_port: nil,
+          container_novnc_host: nil,
+          container_extra_run_args: nil,
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -151,6 +159,19 @@ defmodule SymphonyElixir.TestSupport do
     codex_turn_timeout_ms = Keyword.get(config, :codex_turn_timeout_ms)
     codex_read_timeout_ms = Keyword.get(config, :codex_read_timeout_ms)
     codex_stall_timeout_ms = Keyword.get(config, :codex_stall_timeout_ms)
+
+    container_settings =
+      Keyword.take(config, [
+        :container_enabled,
+        :container_engine,
+        :container_image,
+        :container_name_prefix,
+        :container_workspace_mount,
+        :container_novnc_container_port,
+        :container_novnc_host,
+        :container_extra_run_args
+      ])
+
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -192,6 +213,7 @@ defmodule SymphonyElixir.TestSupport do
         "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
+        container_yaml(container_settings),
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
@@ -238,6 +260,21 @@ defmodule SymphonyElixir.TestSupport do
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
+  end
+
+  defp container_yaml(container_settings) do
+    entries =
+      container_settings
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Enum.map(fn {key, value} ->
+        field = key |> Atom.to_string() |> String.replace_prefix("container_", "")
+        "  #{field}: #{yaml_value(value)}"
+      end)
+
+    case entries do
+      [] -> nil
+      entries -> Enum.join(["container:" | entries], "\n")
+    end
   end
 
   defp worker_yaml(ssh_hosts, max_concurrent_agents_per_host)
