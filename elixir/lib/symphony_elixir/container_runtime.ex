@@ -6,7 +6,7 @@ defmodule SymphonyElixir.ContainerRuntime do
   """
 
   require Logger
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, Tailscale}
 
   @type container_info :: %{
           container_id: String.t(),
@@ -36,7 +36,9 @@ defmodule SymphonyElixir.ContainerRuntime do
     settings = Config.settings!().container
     name = container_name(issue_identifier, settings)
 
-    with {:ok, container_id} <- start_or_reuse(name, workspace, settings),
+    with {:ok, bind_host} <- resolve_bind_host(settings),
+         {:ok, advertise_host} <- resolve_advertise_host(settings, bind_host),
+         {:ok, container_id} <- start_or_reuse(name, workspace, settings, bind_host),
          {:ok, novnc_port} <- resolve_novnc_port(name, settings) do
       {:ok,
        %{
@@ -46,10 +48,34 @@ defmodule SymphonyElixir.ContainerRuntime do
          engine: settings.engine,
          workspace_mount: settings.workspace_mount,
          novnc_port: novnc_port,
-         novnc_url: novnc_url(settings, novnc_port)
+         novnc_url: novnc_url(advertise_host, novnc_port)
        }}
     end
   end
+
+  # "tailscale" binds the published port to this node's Tailscale IPv4 so the
+  # desktop is reachable from the tailnet but not from other networks.
+  defp resolve_bind_host(%{novnc_host: "tailscale"}), do: Tailscale.ipv4()
+  defp resolve_bind_host(%{novnc_host: host}), do: {:ok, host}
+
+  defp resolve_advertise_host(%{novnc_advertise_host: "tailscale"}, _bind_host) do
+    Tailscale.advertise_host()
+  end
+
+  defp resolve_advertise_host(%{novnc_advertise_host: host}, _bind_host)
+       when is_binary(host) and host != "" do
+    {:ok, host}
+  end
+
+  defp resolve_advertise_host(%{novnc_host: "tailscale"}, bind_host) do
+    # Prefer the MagicDNS name in dashboard URLs; fall back to the bound IP.
+    case Tailscale.advertise_host() do
+      {:ok, host} -> {:ok, host}
+      {:error, _reason} -> {:ok, bind_host}
+    end
+  end
+
+  defp resolve_advertise_host(_settings, bind_host), do: {:ok, bind_host}
 
   @doc """
   Force-removes the per-issue container. Safe to call when no container exists.
@@ -91,7 +117,7 @@ defmodule SymphonyElixir.ContainerRuntime do
     String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
   end
 
-  defp start_or_reuse(name, workspace, settings) do
+  defp start_or_reuse(name, workspace, settings, bind_host) do
     case engine_cmd(settings.engine, ["inspect", "--format", "{{.Id}} {{.State.Running}}", name]) do
       {:ok, {output, 0}} ->
         case String.split(String.trim(output)) do
@@ -99,26 +125,26 @@ defmodule SymphonyElixir.ContainerRuntime do
             {:ok, container_id}
 
           _ ->
-            replace_container(name, workspace, settings)
+            replace_container(name, workspace, settings, bind_host)
         end
 
       {:ok, {_output, _status}} ->
-        run_container(name, workspace, settings)
+        run_container(name, workspace, settings, bind_host)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp replace_container(name, workspace, settings) do
+  defp replace_container(name, workspace, settings, bind_host) do
     case engine_cmd(settings.engine, ["rm", "--force", name]) do
-      {:ok, {_output, 0}} -> run_container(name, workspace, settings)
+      {:ok, {_output, 0}} -> run_container(name, workspace, settings, bind_host)
       {:ok, {output, status}} -> {:error, {:container_remove_failed, name, status, output}}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp run_container(name, workspace, settings) do
+  defp run_container(name, workspace, settings, bind_host) do
     args =
       [
         "run",
@@ -130,7 +156,7 @@ defmodule SymphonyElixir.ContainerRuntime do
         "--volume",
         "#{workspace}:#{settings.workspace_mount}",
         "--publish",
-        "#{settings.novnc_host}::#{settings.novnc_container_port}"
+        "#{bind_host}::#{settings.novnc_container_port}"
       ] ++ settings.extra_run_args ++ [settings.image]
 
     case engine_cmd(settings.engine, args) do
@@ -174,8 +200,8 @@ defmodule SymphonyElixir.ContainerRuntime do
     end
   end
 
-  defp novnc_url(settings, port) do
-    "http://#{settings.novnc_host}:#{port}/vnc.html?autoconnect=1&resize=scale"
+  defp novnc_url(advertise_host, port) do
+    "http://#{advertise_host}:#{port}/vnc.html?autoconnect=1&resize=scale"
   end
 
   defp engine_cmd(engine, args) do

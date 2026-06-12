@@ -184,9 +184,15 @@ container:
     - "/home/you/.codex/auth.json:/root/.codex/auth.json:ro"
 ```
 
+Developing on a remote server over Tailscale? Set `server.host: tailscale`
+and `container.novnc_host: tailscale` to bind the dashboard and the desktop
+ports to your tailnet (resolved via the `tailscale` CLI, advertised with the
+server's MagicDNS name).
+
 Build the desktop image from [`docker/agent-desktop`](docker/agent-desktop)
 and see [`docs/containers.md`](docs/containers.md) for the full configuration
-reference and security notes.
+reference, Tailscale remote-access setup, Codex-in-container troubleshooting,
+and security notes.
 
 ## Project Layout
 

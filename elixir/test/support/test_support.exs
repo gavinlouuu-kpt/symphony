@@ -121,6 +121,7 @@ defmodule SymphonyElixir.TestSupport do
           container_workspace_mount: nil,
           container_novnc_container_port: nil,
           container_novnc_host: nil,
+          container_novnc_advertise_host: nil,
           container_extra_run_args: nil,
           hook_after_create: nil,
           hook_before_run: nil,
@@ -169,6 +170,7 @@ defmodule SymphonyElixir.TestSupport do
         :container_workspace_mount,
         :container_novnc_container_port,
         :container_novnc_host,
+        :container_novnc_advertise_host,
         :container_extra_run_args
       ])
 

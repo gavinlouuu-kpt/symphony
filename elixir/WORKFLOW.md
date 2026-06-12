@@ -30,7 +30,8 @@ agent:
   max_turns: 20
 # Optional: run each issue's agent in its own desktop-enabled container and
 # expose an interactive noVNC desktop per issue on the web dashboard.
-# See docs/containers.md and docker/agent-desktop for details.
+# Set novnc_host (and server.host) to "tailscale" to bind to the tailnet for
+# remote development. See docs/containers.md and docker/agent-desktop.
 container:
   enabled: false
   engine: docker

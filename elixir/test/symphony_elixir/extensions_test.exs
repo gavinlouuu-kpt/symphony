@@ -734,6 +734,37 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
   end
 
+  test "http server resolves the tailscale host shorthand" do
+    orchestrator_name = Module.concat(__MODULE__, :TailscaleHostOrchestrator)
+
+    refresh = %{
+      queued: true,
+      coalesced: false,
+      requested_at: DateTime.utc_now(),
+      operations: ["poll"]
+    }
+
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: static_snapshot(), refresh: refresh})
+
+    Application.put_env(:symphony_elixir, :tailscale_command_runner, fn ["ip", "-4"] ->
+      {:ok, {"127.0.0.1\n", 0}}
+    end)
+
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :tailscale_command_runner) end)
+
+    start_supervised!({HttpServer, [host: "tailscale", port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 50]})
+
+    port = wait_for_bound_port()
+    response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
+    assert response.status == 200
+
+    Application.put_env(:symphony_elixir, :tailscale_command_runner, fn _args ->
+      {:error, :tailscale_not_found}
+    end)
+
+    assert {:error, :tailscale_not_found} = HttpServer.start_link(host: "tailscale", port: 0)
+  end
+
   defp start_test_endpoint(overrides) do
     endpoint_config =
       :symphony_elixir
