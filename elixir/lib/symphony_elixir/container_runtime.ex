@@ -283,6 +283,15 @@ defmodule SymphonyElixir.ContainerRuntime do
   end
 
   defp run_container(name, issue_identifier, workspace, settings, bind_host) do
+    with {:ok, auth_source} <- resolve_codex_auth_file(settings),
+         {:ok, container_id} <- engine_run(name, issue_identifier, workspace, settings, bind_host),
+         :ok <- provision_codex_auth(name, settings, auth_source) do
+      Logger.info("Started agent container container_name=#{name} image=#{settings.image} workspace=#{workspace}")
+      {:ok, container_id}
+    end
+  end
+
+  defp engine_run(name, issue_identifier, workspace, settings, bind_host) do
     args =
       [
         "run",
@@ -300,14 +309,21 @@ defmodule SymphonyElixir.ContainerRuntime do
       ] ++ recording_run_args(settings) ++ settings.extra_run_args ++ [settings.image]
 
     case engine_cmd(settings.engine, args) do
-      {:ok, {output, 0}} ->
-        Logger.info("Started agent container container_name=#{name} image=#{settings.image} workspace=#{workspace}")
-        {:ok, String.trim(output)}
+      {:ok, {output, 0}} -> {:ok, String.trim(output)}
+      {:ok, {output, status}} -> {:error, {:container_start_failed, name, status, output}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-      {:ok, {output, status}} ->
-        {:error, {:container_start_failed, name, status, output}}
+  defp provision_codex_auth(name, settings, auth_source) do
+    case install_codex_auth(name, settings, auth_source) do
+      :ok ->
+        :ok
 
       {:error, reason} ->
+        # Remove the half-initialized container so a retry recreates it and
+        # re-attempts the credential copy instead of reusing it.
+        engine_cmd(settings.engine, ["rm", "--force", name])
         {:error, reason}
     end
   end
@@ -333,6 +349,61 @@ defmodule SymphonyElixir.ContainerRuntime do
   defp container_recordings_dir(%{recordings_dir: "/" <> _absolute = absolute}), do: absolute
 
   defp container_recordings_dir(%{workspace_mount: workspace_mount, recordings_dir: recordings_dir}), do: Path.join(workspace_mount, recordings_dir)
+
+  @default_codex_auth_file "~/.codex/auth.json"
+
+  # Codex rewrites auth.json whenever it refreshes its OAuth tokens, so
+  # bind-mounting the host file into the container breaks: a read-only mount
+  # makes the refresh fail, and a read-write single-file mount goes stale
+  # because Codex replaces the file via rename (the mount keeps the old
+  # inode). Copying at container start gives Codex a private writable copy.
+  defp resolve_codex_auth_file(%{codex_auth_file: ""}), do: {:ok, nil}
+
+  defp resolve_codex_auth_file(%{codex_auth_file: configured}) do
+    default? = configured == @default_codex_auth_file
+    path = expand_codex_auth_file(configured, default?)
+
+    cond do
+      File.regular?(path) ->
+        {:ok, path}
+
+      default? ->
+        Logger.debug("No Codex auth file found at #{path}; skipping credential copy into container")
+        {:ok, nil}
+
+      true ->
+        {:error, {:codex_auth_file_not_found, path}}
+    end
+  end
+
+  defp expand_codex_auth_file(configured, default?) do
+    codex_home = System.get_env("CODEX_HOME")
+
+    if default? and is_binary(codex_home) and codex_home != "" do
+      Path.join(codex_home, "auth.json")
+    else
+      expand_home(configured)
+    end
+  end
+
+  defp expand_home("~/" <> rest), do: Path.join(System.user_home!(), rest)
+  defp expand_home(path), do: Path.expand(path)
+
+  defp install_codex_auth(_name, _settings, nil), do: :ok
+
+  defp install_codex_auth(name, settings, auth_source) do
+    container_path = settings.codex_auth_container_path
+    container_dir = Path.dirname(container_path)
+
+    with {:ok, {_output, 0}} <- engine_cmd(settings.engine, ["exec", name, "mkdir", "-p", container_dir]),
+         {:ok, {_output, 0}} <- engine_cmd(settings.engine, ["cp", auth_source, "#{name}:#{container_path}"]) do
+      Logger.info("Copied Codex credentials into container container_name=#{name} source=#{auth_source} destination=#{container_path}")
+      :ok
+    else
+      {:ok, {output, status}} -> {:error, {:codex_auth_copy_failed, name, status, output}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp resolve_novnc_port(name, settings) do
     case engine_cmd(settings.engine, ["port", name, "#{settings.novnc_container_port}/tcp"]) do

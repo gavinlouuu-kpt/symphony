@@ -24,11 +24,15 @@ docker build -t symphony-agent-desktop:latest elixir/docker/agent-desktop
 container:
   enabled: true
   image: symphony-agent-desktop:latest
-  # Codex inside the container needs credentials. Mount them read-only:
-  extra_run_args:
-    - "--volume"
-    - "/home/you/.codex/auth.json:/root/.codex/auth.json:ro"
 ```
+
+Codex inside the container needs credentials. Symphony copies the host's
+`~/.codex/auth.json` (configurable via `container.codex_auth_file`) into each
+fresh container at `/root/.codex/auth.json`, so no extra configuration is
+needed when the orchestrator host is logged in to Codex. Do not bind-mount
+`auth.json` instead — Codex rewrites the file when it refreshes its OAuth
+tokens, so mounted credentials break after the first refresh. See
+`docs/containers.md` for details.
 
 The orchestrator bind-mounts each issue workspace at `/workspace` inside the
 container and publishes the noVNC port on an ephemeral host port (bound to
