@@ -6,7 +6,9 @@ defmodule SymphonyElixir.ContainerRuntime do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, Tailscale}
+  alias SymphonyElixir.{Config, PullRequest, Tailscale, Workspace}
+
+  @issue_label "symphony.issue"
 
   @type container_info :: %{
           container_id: String.t(),
@@ -38,7 +40,7 @@ defmodule SymphonyElixir.ContainerRuntime do
 
     with {:ok, bind_host} <- resolve_bind_host(settings),
          {:ok, advertise_host} <- resolve_advertise_host(settings, bind_host),
-         {:ok, container_id} <- start_or_reuse(name, workspace, settings, bind_host),
+         {:ok, container_id} <- start_or_reuse(name, issue_identifier, workspace, settings, bind_host),
          {:ok, novnc_port} <- resolve_novnc_port(name, settings) do
       {:ok,
        %{
@@ -104,6 +106,130 @@ defmodule SymphonyElixir.ContainerRuntime do
     end
   end
 
+  @doc """
+  Runs `script` inside the issue's container via `<engine> exec ... bash -lc`.
+  Used by the setup phase to provision reusable container features.
+  """
+  @spec engine_exec(String.t(), String.t()) :: {:ok, {String.t(), integer()}} | {:error, term()}
+  def engine_exec(container_name, script) when is_binary(container_name) and is_binary(script) do
+    settings = Config.settings!().container
+    engine_cmd(settings.engine, ["exec", container_name, "bash", "-lc", script])
+  end
+
+  @doc """
+  Review-phase cleanup for a finished issue. When container mode and
+  `keep_pr_desktops` are enabled and the issue still has an open PR, the desktop
+  container (and its workspace) are retained so reviewers can keep driving it;
+  the reaper removes it once the PR is merged or closed. Otherwise the container
+  is force-removed.
+
+  Returns `:retained` when the desktop was kept (the caller should leave the
+  workspace in place) or `:removed` otherwise.
+  """
+  @spec cleanup_for_issue(String.t()) :: :retained | :removed
+  def cleanup_for_issue(issue_identifier), do: cleanup_for_issue(issue_identifier, nil)
+
+  @spec cleanup_for_issue(String.t(), String.t() | nil) :: :retained | :removed
+  def cleanup_for_issue(issue_identifier, nil) when is_binary(issue_identifier) do
+    case Config.settings() do
+      {:ok, %{container: %{enabled: true, keep_pr_desktops: true}}} ->
+        retain_or_remove(issue_identifier)
+
+      {:ok, %{container: %{enabled: true}}} ->
+        remove_for_issue(issue_identifier)
+        :removed
+
+      _ ->
+        :removed
+    end
+  end
+
+  # Containers are only managed on the orchestrator host; SSH-worker issues keep
+  # the existing remote cleanup path.
+  def cleanup_for_issue(_issue_identifier, _worker_host), do: :removed
+
+  defp retain_or_remove(issue_identifier) do
+    case Workspace.issue_workspace_path(issue_identifier) do
+      {:ok, workspace} ->
+        if PullRequest.open?(PullRequest.status(workspace)) do
+          Logger.info("Retaining agent desktop for open PR issue_identifier=#{issue_identifier} workspace=#{workspace}")
+          :retained
+        else
+          remove_for_issue(issue_identifier)
+          :removed
+        end
+
+      {:error, _reason} ->
+        remove_for_issue(issue_identifier)
+        :removed
+    end
+  end
+
+  @doc """
+  Reaps retained desktops. For every managed container whose issue is no longer
+  in `active_identifiers`, checks the PR status and removes the container (and
+  its workspace) once the PR is merged or closed. Returns the reaped identifiers.
+  Safe to call when container mode is disabled.
+  """
+  @spec reap_retained_desktops([String.t()]) :: [String.t()]
+  def reap_retained_desktops(active_identifiers) when is_list(active_identifiers) do
+    case Config.settings() do
+      {:ok, %{container: %{enabled: true, keep_pr_desktops: true} = settings}} ->
+        active = MapSet.new(active_identifiers)
+
+        settings
+        |> managed_issue_identifiers()
+        |> Enum.reject(&MapSet.member?(active, &1))
+        |> Enum.filter(&reap_if_outdated/1)
+
+      _ ->
+        []
+    end
+  end
+
+  defp reap_if_outdated(issue_identifier) do
+    case Workspace.issue_workspace_path(issue_identifier) do
+      {:ok, workspace} ->
+        if PullRequest.outdated?(PullRequest.status(workspace)) do
+          Logger.info("Reaping outdated agent desktop issue_identifier=#{issue_identifier} workspace=#{workspace}")
+          remove_for_issue(issue_identifier)
+          Workspace.remove_issue_workspaces(issue_identifier)
+          true
+        else
+          false
+        end
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp managed_issue_identifiers(settings) do
+    case engine_cmd(settings.engine, [
+           "ps",
+           "--all",
+           "--filter",
+           "label=symphony.managed=true",
+           "--format",
+           "{{index .Labels \"#{@issue_label}\"}}"
+         ]) do
+      {:ok, {output, 0}} ->
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+        |> Enum.uniq()
+
+      {:ok, {output, status}} ->
+        Logger.warning("Failed to list managed agent containers status=#{status} output=#{inspect(output)}")
+        []
+
+      {:error, reason} ->
+        Logger.warning("Failed to list managed agent containers error=#{inspect(reason)}")
+        []
+    end
+  end
+
   @spec container_name(String.t()) :: String.t()
   def container_name(issue_identifier) when is_binary(issue_identifier) do
     container_name(issue_identifier, Config.settings!().container)
@@ -117,7 +243,7 @@ defmodule SymphonyElixir.ContainerRuntime do
     String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
   end
 
-  defp start_or_reuse(name, workspace, settings, bind_host) do
+  defp start_or_reuse(name, issue_identifier, workspace, settings, bind_host) do
     case engine_cmd(settings.engine, ["inspect", "--format", "{{.Id}} {{.State.Running}}", name]) do
       {:ok, {output, 0}} ->
         case String.split(String.trim(output)) do
@@ -125,26 +251,26 @@ defmodule SymphonyElixir.ContainerRuntime do
             {:ok, container_id}
 
           _ ->
-            replace_container(name, workspace, settings, bind_host)
+            replace_container(name, issue_identifier, workspace, settings, bind_host)
         end
 
       {:ok, {_output, _status}} ->
-        run_container(name, workspace, settings, bind_host)
+        run_container(name, issue_identifier, workspace, settings, bind_host)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp replace_container(name, workspace, settings, bind_host) do
+  defp replace_container(name, issue_identifier, workspace, settings, bind_host) do
     case engine_cmd(settings.engine, ["rm", "--force", name]) do
-      {:ok, {_output, 0}} -> run_container(name, workspace, settings, bind_host)
+      {:ok, {_output, 0}} -> run_container(name, issue_identifier, workspace, settings, bind_host)
       {:ok, {output, status}} -> {:error, {:container_remove_failed, name, status, output}}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp run_container(name, workspace, settings, bind_host) do
+  defp run_container(name, issue_identifier, workspace, settings, bind_host) do
     args =
       [
         "run",
@@ -153,6 +279,8 @@ defmodule SymphonyElixir.ContainerRuntime do
         name,
         "--label",
         "symphony.managed=true",
+        "--label",
+        "#{@issue_label}=#{issue_identifier}",
         "--volume",
         "#{workspace}:#{settings.workspace_mount}",
         "--publish",

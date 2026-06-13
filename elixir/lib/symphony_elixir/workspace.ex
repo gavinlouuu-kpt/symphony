@@ -193,6 +193,22 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @doc """
+  Returns the canonical workspace path for an issue identifier, mirroring the
+  path used by `create_for_issue/2` and `remove_issue_workspaces/2`.
+  """
+  @spec issue_workspace_path(term()) :: {:ok, Path.t()} | {:error, term()}
+  def issue_workspace_path(identifier), do: issue_workspace_path(identifier, nil)
+
+  @spec issue_workspace_path(term(), worker_host()) :: {:ok, Path.t()} | {:error, term()}
+  def issue_workspace_path(identifier, worker_host) when is_binary(identifier) do
+    identifier
+    |> safe_identifier()
+    |> workspace_path_for_issue(worker_host)
+  end
+
+  def issue_workspace_path(_identifier, _worker_host), do: {:error, :invalid_identifier}
+
   defp workspace_path_for_issue(safe_id, nil) when is_binary(safe_id) do
     Config.settings!().workspace.root
     |> Path.join(safe_id)

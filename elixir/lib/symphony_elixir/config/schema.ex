@@ -215,6 +215,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:novnc_host, :string, default: "127.0.0.1")
       field(:novnc_advertise_host, :string)
       field(:extra_run_args, {:array, :string}, default: [])
+      field(:features, {:array, :string}, default: ["auto"])
+      field(:keep_pr_desktops, :boolean, default: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -231,7 +233,9 @@ defmodule SymphonyElixir.Config.Schema do
           :novnc_container_port,
           :novnc_host,
           :novnc_advertise_host,
-          :extra_run_args
+          :extra_run_args,
+          :features,
+          :keep_pr_desktops
         ],
         empty_values: []
       )

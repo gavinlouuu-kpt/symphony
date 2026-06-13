@@ -40,6 +40,8 @@ container:
   novnc_container_port: 6080             # noVNC port inside the container
   novnc_host: 127.0.0.1                  # host interface the noVNC port binds to ("tailscale" supported)
   novnc_advertise_host: null             # host used in dashboard URLs (defaults to novnc_host; "tailscale" supported)
+  features: ["auto"]                     # reusable features to install; "auto" detects from the repo
+  keep_pr_desktops: true                 # keep a finished issue's desktop alive until its PR is merged/closed
   extra_run_args:                        # appended verbatim to `docker run`
     - "--volume"
     - "/home/you/.codex/auth.json:/root/.codex/auth.json:ro"
@@ -50,6 +52,70 @@ Build the default desktop image with:
 ```bash
 docker build -t symphony-agent-desktop:latest elixir/docker/agent-desktop
 ```
+
+## Container orchestrator: setup, debug, review
+
+`SymphonyElixir.ContainerOrchestrator` wraps the desktop lifecycle in three
+phases so the base image can stay small and desktops can outlive a single run:
+
+- **setup** — when a container starts, the orchestrator inspects the issue's
+  bind-mounted workspace, decides which reusable *features* the repo needs, and
+  installs them into the container.
+- **debug** — `ContainerOrchestrator.diagnostics/1` returns a snapshot (engine
+  status, installed feature markers, recent desktop logs) for troubleshooting an
+  agent that misbehaves inside its desktop.
+- **review** — finished issues whose pull request is still open keep their
+  desktop alive; the orchestrator reaps it once the PR is merged or closed.
+
+## Reusable features (setup)
+
+Instead of baking every toolchain into `symphony-agent-desktop`, Symphony
+detects what a repository needs and installs it on first use. Features are
+defined once in `SymphonyElixir.ContainerFeatures` and reused across every
+issue. The built-in catalog:
+
+| Feature   | Detected from                                              | Installs                              |
+|-----------|------------------------------------------------------------|---------------------------------------|
+| `make`    | `Makefile` / `GNUmakefile`                                 | `build-essential`, `make`             |
+| `docker`  | `Dockerfile`, `docker-compose.yml`, `.devcontainer/`       | `docker.io` (Docker CLI)              |
+| `node`    | `package.json`                                             | `corepack enable`                     |
+| `python`  | `requirements.txt`, `pyproject.toml`, `setup.py`, `Pipfile`| `python3`, `python3-pip`, venv        |
+| `rust`    | `Cargo.toml`                                               | `rustc`, `cargo`                      |
+| `go`      | `go.mod`                                                   | `golang-go`                           |
+| `browser` | Playwright/Puppeteer/Cypress config or dependency          | `playwright install --with-deps chromium` |
+
+Configure via `container.features`:
+
+- `["auto"]` (default) — auto-detect from the workspace.
+- An explicit list (e.g. `["make", "browser"]`) — install exactly those.
+- Combine `"auto"` with explicit ids to force extras on top of detection.
+- `[]` — disable provisioning entirely.
+
+Provisioning is **idempotent and reusable**: each feature first runs a fast
+"already installed?" check (the base image already ships Node and `git`) and
+drops a marker under `/var/lib/symphony/features/<id>`, so reusing a container
+across turns and retries re-runs each recipe as a cheap no-op. Failures are
+logged and never abort the agent run.
+
+The `docker` feature installs only the Docker CLI; running Docker *inside* the
+container (docker-in-docker) additionally needs `--privileged` (or a mounted
+host socket) via `extra_run_args`.
+
+## Keeping PR desktops alive (review)
+
+By default (`container.keep_pr_desktops: true`) a desktop is **not** torn down
+the moment its issue reaches a terminal state. If the issue still has an open
+pull request, Symphony keeps the container and its workspace alive so reviewers
+can drive the desktop while the PR is in flight. On each poll the orchestrator
+re-checks every retained desktop and reaps it (container + workspace) once the
+PR is merged or closed ("outdated").
+
+PR status is resolved with the GitHub CLI (`gh pr view`) inside the workspace,
+so `gh` must be available and authenticated on the orchestrator host for
+retention to engage; when it cannot determine an open PR, the desktop is cleaned
+up as before. Set `keep_pr_desktops: false` to always tear desktops down at
+terminal state. Retention applies to desktops on the orchestrator host only;
+issues dispatched to `worker.ssh_hosts` keep the existing cleanup path.
 
 ## Remote access over Tailscale
 
