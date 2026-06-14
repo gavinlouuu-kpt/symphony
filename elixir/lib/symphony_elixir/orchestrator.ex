@@ -7,8 +7,8 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, ContainerRuntime, StatusDashboard, Tracker, Workspace}
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.{AgentRunner, Config, ContainerOrchestrator, ContainerRuntime, Linear.Issue}
+  alias SymphonyElixir.{StatusDashboard, Tracker, Workspace}
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -249,6 +249,8 @@ defmodule SymphonyElixir.Orchestrator do
       state
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
+
+    review_pr_desktops(state)
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
@@ -1110,11 +1112,40 @@ defmodule SymphonyElixir.Orchestrator do
   defp cleanup_issue_workspace(identifier, worker_host \\ nil)
 
   defp cleanup_issue_workspace(identifier, worker_host) when is_binary(identifier) do
-    ContainerRuntime.remove_for_issue(identifier)
-    Workspace.remove_issue_workspaces(identifier, worker_host)
+    case ContainerRuntime.cleanup_for_issue(identifier, worker_host) do
+      :retained ->
+        # The desktop is kept alive for its open PR; the reaper removes the
+        # container and workspace once the PR is merged or closed.
+        :ok
+
+      :removed ->
+        Workspace.remove_issue_workspaces(identifier, worker_host)
+    end
   end
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
+
+  defp review_pr_desktops(%State{} = state) do
+    state
+    |> active_issue_identifiers()
+    |> ContainerOrchestrator.review()
+
+    :ok
+  end
+
+  defp active_issue_identifiers(%State{} = state) do
+    [state.running, state.blocked, state.retry_attempts]
+    |> Enum.flat_map(&Map.values/1)
+    |> Enum.flat_map(&entry_identifier/1)
+    |> Enum.uniq()
+  end
+
+  defp entry_identifier(entry) do
+    case Map.get(entry, :identifier) do
+      identifier when is_binary(identifier) -> [identifier]
+      _ -> []
+    end
+  end
 
   defp blocked_issue_worker_host(%State{} = state, issue_id) do
     state.blocked

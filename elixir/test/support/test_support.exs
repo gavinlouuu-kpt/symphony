@@ -123,6 +123,8 @@ defmodule SymphonyElixir.TestSupport do
           container_novnc_host: nil,
           container_novnc_advertise_host: nil,
           container_extra_run_args: nil,
+          container_features: nil,
+          container_keep_pr_desktops: nil,
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -171,7 +173,9 @@ defmodule SymphonyElixir.TestSupport do
         :container_novnc_container_port,
         :container_novnc_host,
         :container_novnc_advertise_host,
-        :container_extra_run_args
+        :container_extra_run_args,
+        :container_features,
+        :container_keep_pr_desktops
       ])
 
     hook_after_create = Keyword.get(config, :hook_after_create)

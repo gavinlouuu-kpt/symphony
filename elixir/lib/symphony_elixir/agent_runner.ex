@@ -5,7 +5,8 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, ContainerRuntime, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, ContainerOrchestrator, ContainerRuntime, Linear.Issue}
+  alias SymphonyElixir.{PromptBuilder, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 
@@ -54,7 +55,11 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp maybe_start_container(issue, workspace, nil) do
     if ContainerRuntime.enabled?() do
-      ContainerRuntime.ensure_started(issue.identifier, workspace)
+      with {:ok, container} <- ContainerRuntime.ensure_started(issue.identifier, workspace) do
+        # Setup phase: decide and install the reusable features this repo needs.
+        ContainerOrchestrator.setup(container, workspace)
+        {:ok, container}
+      end
     else
       {:ok, nil}
     end

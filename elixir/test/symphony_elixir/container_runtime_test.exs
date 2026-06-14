@@ -7,6 +7,7 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :container_command_runner)
       Application.delete_env(:symphony_elixir, :tailscale_command_runner)
+      Application.delete_env(:symphony_elixir, :pull_request_resolver)
     end)
 
     :ok
@@ -24,6 +25,8 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
     assert settings.novnc_host == "127.0.0.1"
     assert settings.novnc_advertise_host == nil
     assert settings.extra_run_args == []
+    assert settings.features == ["auto"]
+    assert settings.keep_pr_desktops == true
 
     refute ContainerRuntime.enabled?()
   end
@@ -419,5 +422,202 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
 
   test "container_name sanitizes issue identifiers" do
     assert ContainerRuntime.container_name("MT 1/weird:id") == "symphony-agent-MT_1_weird_id"
+  end
+
+  test "run labels the container with its issue identifier for later reaping" do
+    write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"abc\n", 0}}
+        ["port" | _] -> {:ok, {"127.0.0.1:5000\n", 0}}
+      end
+    end)
+
+    assert {:ok, _info} = ContainerRuntime.ensure_started("MT-50", "/tmp/workspaces/MT-50")
+    assert_received {:engine_cmd, "docker", ["run" | run_args]}
+    assert "symphony.issue=MT-50" in run_args
+  end
+
+  test "engine_exec runs a script inside the container" do
+    write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+      {:ok, {"done\n", 0}}
+    end)
+
+    assert {:ok, {"done\n", 0}} = ContainerRuntime.engine_exec("symphony-agent-MT-1", "echo hi")
+    assert_received {:engine_cmd, "docker", ["exec", "symphony-agent-MT-1", "bash", "-lc", "echo hi"]}
+  end
+
+  describe "cleanup_for_issue" do
+    test "retains the desktop while the PR is open" do
+      write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+      Application.put_env(:symphony_elixir, :pull_request_resolver, fn _workspace -> :open end)
+
+      Application.put_env(:symphony_elixir, :container_command_runner, fn _engine, _args ->
+        flunk("container must not be removed while its PR is open")
+      end)
+
+      assert :retained = ContainerRuntime.cleanup_for_issue("MT-60")
+    end
+
+    test "removes the desktop once the PR is merged or closed" do
+      write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+      Application.put_env(:symphony_elixir, :pull_request_resolver, fn _workspace -> :merged end)
+      test_pid = self()
+
+      Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+        send(test_pid, {:engine_cmd, engine, args})
+        {:ok, {"", 0}}
+      end)
+
+      assert :removed = ContainerRuntime.cleanup_for_issue("MT-61")
+      assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-61"]}
+    end
+
+    test "removes the desktop when the workspace path cannot be resolved" do
+      regular_file =
+        Path.join(System.tmp_dir!(), "symphony-not-a-dir-#{System.unique_integer([:positive])}")
+
+      File.write!(regular_file, "")
+      on_exit(fn -> File.rm_rf(regular_file) end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        container_enabled: true,
+        workspace_root: Path.join(regular_file, "nested")
+      )
+
+      Application.put_env(:symphony_elixir, :pull_request_resolver, fn _workspace ->
+        flunk("PR status must not be checked when the workspace path is unresolved")
+      end)
+
+      test_pid = self()
+
+      Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+        send(test_pid, {:engine_cmd, engine, args})
+        {:ok, {"", 0}}
+      end)
+
+      assert :removed = ContainerRuntime.cleanup_for_issue("MT-62")
+      assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-62"]}
+    end
+
+    test "force-removes without a PR check when retention is disabled" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        container_enabled: true,
+        container_keep_pr_desktops: false
+      )
+
+      Application.put_env(:symphony_elixir, :pull_request_resolver, fn _workspace ->
+        flunk("PR status must not be checked when retention is disabled")
+      end)
+
+      test_pid = self()
+
+      Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+        send(test_pid, {:engine_cmd, engine, args})
+        {:ok, {"", 0}}
+      end)
+
+      assert :removed = ContainerRuntime.cleanup_for_issue("MT-63")
+      assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-63"]}
+    end
+
+    test "is a no-op signal when container mode is disabled or routed to a worker" do
+      Application.put_env(:symphony_elixir, :container_command_runner, fn _engine, _args ->
+        flunk("engine must not be invoked when container mode is disabled")
+      end)
+
+      assert :removed = ContainerRuntime.cleanup_for_issue("MT-64")
+
+      write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+      assert :removed = ContainerRuntime.cleanup_for_issue("MT-64", "dm-dev2")
+    end
+  end
+
+  describe "reap_retained_desktops" do
+    test "returns [] when container mode or retention is disabled" do
+      assert ContainerRuntime.reap_retained_desktops(["MT-1"]) == []
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        container_enabled: true,
+        container_keep_pr_desktops: false
+      )
+
+      assert ContainerRuntime.reap_retained_desktops(["MT-1"]) == []
+    end
+
+    test "reaps only inactive desktops whose PRs are merged or closed" do
+      write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+      test_pid = self()
+
+      Application.put_env(:symphony_elixir, :pull_request_resolver, fn workspace ->
+        cond do
+          String.contains?(workspace, "MT-A") -> :merged
+          String.contains?(workspace, "MT-C") -> :open
+          true -> :none
+        end
+      end)
+
+      Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+        send(test_pid, {:engine_cmd, engine, args})
+
+        case args do
+          ["ps" | _] -> {:ok, {"MT-A\nMT-B\nMT-C\n", 0}}
+          ["rm" | _] -> {:ok, {"", 0}}
+        end
+      end)
+
+      # MT-B is still active so it is never inspected; MT-C's PR is open so it is kept.
+      assert ContainerRuntime.reap_retained_desktops(["MT-B"]) == ["MT-A"]
+      assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-A"]}
+      refute_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-C"]}
+    end
+
+    test "keeps a desktop whose workspace path cannot be resolved" do
+      regular_file =
+        Path.join(System.tmp_dir!(), "symphony-not-a-dir-#{System.unique_integer([:positive])}")
+
+      File.write!(regular_file, "")
+      on_exit(fn -> File.rm_rf(regular_file) end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        container_enabled: true,
+        workspace_root: Path.join(regular_file, "nested")
+      )
+
+      Application.put_env(:symphony_elixir, :container_command_runner, fn _engine, args ->
+        case args do
+          ["ps" | _] -> {:ok, {"MT-Z\n", 0}}
+        end
+      end)
+
+      assert ContainerRuntime.reap_retained_desktops([]) == []
+    end
+
+    test "logs and returns [] when listing managed containers fails" do
+      write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+
+      Application.put_env(:symphony_elixir, :container_command_runner, fn _engine, _args ->
+        {:ok, {"boom", 1}}
+      end)
+
+      log = capture_log(fn -> assert ContainerRuntime.reap_retained_desktops([]) == [] end)
+      assert log =~ "Failed to list managed agent containers"
+
+      Application.put_env(:symphony_elixir, :container_command_runner, fn _engine, _args ->
+        {:error, :engine_unreachable}
+      end)
+
+      log = capture_log(fn -> assert ContainerRuntime.reap_retained_desktops([]) == [] end)
+      assert log =~ "Failed to list managed agent containers"
+    end
   end
 end

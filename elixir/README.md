@@ -179,10 +179,19 @@ interact with — each agent's desktop and workspace terminal live.
 container:
   enabled: true
   image: symphony-agent-desktop:latest
+  features: ["auto"]      # auto-detect & install make/docker/browser/… per repo
+  keep_pr_desktops: true  # keep a finished issue's desktop alive until its PR merges/closes
   extra_run_args:
     - "--volume"
     - "/home/you/.codex/auth.json:/root/.codex/auth.json:ro"
 ```
+
+A container orchestrator manages the desktop lifecycle in three phases: **setup**
+(detect what the repo needs — `make`, `docker`, a `browser`, etc. — and install
+those reusable features into the container), **debug** (collect a diagnostics
+snapshot for a misbehaving desktop), and **review** (keep a finished issue's
+desktop alive while its pull request is open, reaping it once the PR is merged or
+closed).
 
 Developing on a remote server over Tailscale? Set `server.host: tailscale`
 and `container.novnc_host: tailscale` to bind the dashboard and the desktop

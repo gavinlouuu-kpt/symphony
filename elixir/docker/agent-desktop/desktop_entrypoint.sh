@@ -9,6 +9,12 @@ GEOMETRY="${SYMPHONY_DESKTOP_GEOMETRY:-1440x900x24}"
 VNC_PORT="${SYMPHONY_VNC_PORT:-5900}"
 NOVNC_PORT="${SYMPHONY_NOVNC_PORT:-6080}"
 WORKSPACE_DIR="${SYMPHONY_WORKSPACE_DIR:-/workspace}"
+LOG_FILE="${SYMPHONY_DESKTOP_LOG:-/var/log/symphony-agent-desktop.log}"
+
+# Mirror the desktop stack's output to a log file so the container
+# orchestrator's debug phase can surface recent desktop logs.
+mkdir -p "$(dirname "$LOG_FILE")"
+exec > >(tee -a "$LOG_FILE") 2>&1
 
 export DISPLAY="$DISPLAY_NUM"
 
