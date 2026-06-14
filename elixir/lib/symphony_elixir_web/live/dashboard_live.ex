@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.Recordings
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -173,11 +174,34 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </iframe>
                 </div>
                 <footer class="desktop-card-meta">
-                  <span class="muted">noVNC · port <span class="mono numeric"><%= entry.container.novnc_port %></span></span>
+                  <span class="muted">
+                    noVNC · port <span class="mono numeric"><%= entry.container.novnc_port %></span>
+                    <%= if Map.get(entry.container, :recording) do %>
+                      · <span class="state-badge state-badge-danger">● REC</span>
+                    <% end %>
+                  </span>
                   <a class="issue-link" href={entry.container.novnc_url} target="_blank" rel="noopener noreferrer">
                     Open in new tab
                   </a>
                 </footer>
+                <%= if entry.recordings != [] do %>
+                  <div class="desktop-recordings">
+                    <span class="muted">Recordings for demo &amp; review:</span>
+                    <ul class="desktop-recordings-list">
+                      <li :for={recording <- entry.recordings}>
+                        <a
+                          class="issue-link"
+                          href={"/api/v1/#{entry.issue_identifier}/recordings/#{recording.name}"}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <%= recording.name %>
+                        </a>
+                        <span class="muted mono numeric"><%= format_bytes(recording.size) %></span>
+                      </li>
+                    </ul>
+                  </div>
+                <% end %>
               </article>
             </div>
           </section>
@@ -443,9 +467,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
       %{
         issue_identifier: entry.issue_identifier,
         state: Map.get(entry, :state) || "Blocked",
-        container: entry.container
+        container: entry.container,
+        recordings: recordings_for(entry.issue_identifier)
       }
     end)
+  end
+
+  defp recordings_for(issue_identifier) do
+    case Recordings.list(issue_identifier) do
+      {:ok, recordings} -> recordings
+      {:error, _reason} -> []
+    end
   end
 
   defp focused_desktop_entry(_desktops, nil), do: nil
@@ -509,6 +541,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_int(_value), do: "n/a"
+
+  defp format_bytes(bytes) when is_integer(bytes) and bytes >= 1_048_576 do
+    "#{Float.round(bytes / 1_048_576, 1)} MB"
+  end
+
+  defp format_bytes(bytes) when is_integer(bytes) and bytes >= 1024 do
+    "#{Float.round(bytes / 1024, 1)} KB"
+  end
+
+  defp format_bytes(bytes) when is_integer(bytes), do: "#{bytes} B"
+  defp format_bytes(_bytes), do: "n/a"
 
   defp state_badge_class(state) do
     base = "state-badge"

@@ -33,6 +33,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixirWeb.Layouts,
           SymphonyElixirWeb.ObservabilityApiController,
           SymphonyElixirWeb.Presenter,
+          SymphonyElixirWeb.RecordingController,
           SymphonyElixirWeb.StaticAssetController,
           SymphonyElixirWeb.StaticAssets,
           SymphonyElixirWeb.Router,

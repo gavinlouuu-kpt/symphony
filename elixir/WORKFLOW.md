@@ -33,7 +33,9 @@ agent:
 # Set novnc_host (and server.host) to "tailscale" to bind to the tailnet for
 # remote development. The container orchestrator auto-detects and installs the
 # reusable features a repo needs (make/docker/browser/…) and keeps a finished
-# issue's desktop alive until its PR is merged or closed. See docs/containers.md.
+# issue's desktop alive until its PR is merged or closed. Set record: true to
+# capture each desktop to video (in the workspace) for demo and review. See
+# docs/containers.md.
 container:
   enabled: false
   engine: docker
@@ -42,6 +44,7 @@ container:
   novnc_host: 127.0.0.1
   features: ["auto"]
   keep_pr_desktops: true
+  record: false
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
   approval_policy: never

@@ -27,6 +27,10 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
     assert settings.extra_run_args == []
     assert settings.features == ["auto"]
     assert settings.keep_pr_desktops == true
+    assert settings.record == false
+    assert settings.recordings_dir == ".symphony/recordings"
+    assert settings.record_framerate == 10
+    assert settings.record_segment_seconds == 60
 
     refute ContainerRuntime.enabled?()
   end
@@ -55,6 +59,32 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
     refute ContainerRuntime.enabled?()
   end
 
+  test "container config accepts recording overrides and rejects non-positive recording numbers" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_record: true,
+      container_recordings_dir: "captures",
+      container_record_framerate: 24,
+      container_record_segment_seconds: 120
+    )
+
+    settings = Config.settings!().container
+    assert settings.record == true
+    assert settings.recordings_dir == "captures"
+    assert settings.record_framerate == 24
+    assert settings.record_segment_seconds == 120
+
+    write_workflow_file!(Workflow.workflow_file_path(), container_record_framerate: 0)
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "container.record_framerate"
+
+    write_workflow_file!(Workflow.workflow_file_path(), container_record_segment_seconds: 0)
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "container.record_segment_seconds"
+  end
+
   test "ensure_started runs a fresh container and resolves the published noVNC port" do
     write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
     test_pid = self()
@@ -78,6 +108,8 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
     assert info.workspace_mount == "/workspace"
     assert info.novnc_port == 49_160
     assert info.novnc_url == "http://127.0.0.1:49160/vnc.html?autoconnect=1&resize=scale"
+    assert info.recording == false
+    assert info.recordings_path == nil
 
     assert_received {:engine_cmd, "docker", ["inspect" | _]}
     assert_received {:engine_cmd, "docker", ["run" | run_args]}
@@ -87,7 +119,68 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
     assert "/tmp/workspaces/MT-12:/workspace" in run_args
     assert "--publish" in run_args
     assert "127.0.0.1::6080" in run_args
+    refute "SYMPHONY_DESKTOP_RECORD=1" in run_args
     assert List.last(run_args) == "symphony-agent-desktop:latest"
+  end
+
+  test "ensure_started wires desktop recording env and host recordings path when enabled" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_record: true,
+      container_record_framerate: 15,
+      container_record_segment_seconds: 30
+    )
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"rec123\n", 0}}
+        ["port" | _] -> {:ok, {"127.0.0.1:49170\n", 0}}
+      end
+    end)
+
+    assert {:ok, info} = ContainerRuntime.ensure_started("MT-70", "/tmp/workspaces/MT-70")
+
+    assert info.recording == true
+    assert info.recordings_path == "/tmp/workspaces/MT-70/.symphony/recordings"
+
+    assert_received {:engine_cmd, "docker", ["run" | run_args]}
+    assert "SYMPHONY_DESKTOP_RECORD=1" in run_args
+    assert "SYMPHONY_RECORDINGS_DIR=/workspace/.symphony/recordings" in run_args
+    assert "SYMPHONY_RECORD_FRAMERATE=15" in run_args
+    assert "SYMPHONY_RECORD_SEGMENT_SECONDS=30" in run_args
+  end
+
+  test "ensure_started does not advertise a host recordings path for an absolute recordings dir" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_record: true,
+      container_recordings_dir: "/var/recordings"
+    )
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"rec456\n", 0}}
+        ["port" | _] -> {:ok, {"127.0.0.1:49171\n", 0}}
+      end
+    end)
+
+    assert {:ok, info} = ContainerRuntime.ensure_started("MT-71", "/tmp/workspaces/MT-71")
+
+    assert info.recording == true
+    assert info.recordings_path == nil
+
+    assert_received {:engine_cmd, "docker", ["run" | run_args]}
+    assert "SYMPHONY_RECORDINGS_DIR=/var/recordings" in run_args
   end
 
   test "ensure_started binds and advertises via Tailscale when novnc_host is tailscale" do

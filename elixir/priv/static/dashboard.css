@@ -519,6 +519,30 @@ pre,
   font-size: 0.8rem;
 }
 
+.desktop-recordings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+}
+
+.desktop-recordings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.desktop-recordings-list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
 .desktop-overlay {
   position: fixed;
   inset: 0;

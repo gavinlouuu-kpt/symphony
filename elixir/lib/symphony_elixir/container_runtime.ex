@@ -17,7 +17,9 @@ defmodule SymphonyElixir.ContainerRuntime do
           engine: String.t(),
           workspace_mount: String.t(),
           novnc_port: pos_integer(),
-          novnc_url: String.t()
+          novnc_url: String.t(),
+          recording: boolean(),
+          recordings_path: String.t() | nil
         }
 
   @spec enabled?() :: boolean()
@@ -50,10 +52,20 @@ defmodule SymphonyElixir.ContainerRuntime do
          engine: settings.engine,
          workspace_mount: settings.workspace_mount,
          novnc_port: novnc_port,
-         novnc_url: novnc_url(advertise_host, novnc_port)
+         novnc_url: novnc_url(advertise_host, novnc_port),
+         recording: settings.record,
+         recordings_path: host_recordings_path(workspace, settings)
        }}
     end
   end
+
+  # Where the in-container recordings land on the host. Recordings are written
+  # under the bind-mounted workspace so they outlive the container and can be
+  # served back for review; an absolute recordings_dir lives only inside the
+  # container, so there is no host path to advertise.
+  defp host_recordings_path(_workspace, %{record: false}), do: nil
+  defp host_recordings_path(_workspace, %{recordings_dir: "/" <> _absolute}), do: nil
+  defp host_recordings_path(workspace, %{recordings_dir: recordings_dir}), do: Path.join(workspace, recordings_dir)
 
   # "tailscale" binds the published port to this node's Tailscale IPv4 so the
   # desktop is reachable from the tailnet but not from other networks.
@@ -285,7 +297,7 @@ defmodule SymphonyElixir.ContainerRuntime do
         "#{workspace}:#{settings.workspace_mount}",
         "--publish",
         "#{bind_host}::#{settings.novnc_container_port}"
-      ] ++ settings.extra_run_args ++ [settings.image]
+      ] ++ recording_run_args(settings) ++ settings.extra_run_args ++ [settings.image]
 
     case engine_cmd(settings.engine, args) do
       {:ok, {output, 0}} ->
@@ -299,6 +311,28 @@ defmodule SymphonyElixir.ContainerRuntime do
         {:error, reason}
     end
   end
+
+  # Hands the desktop entrypoint everything it needs to capture the virtual
+  # display. Recordings are written to the workspace-relative (or absolute)
+  # recordings_dir resolved against the in-container workspace mount.
+  defp recording_run_args(%{record: true} = settings) do
+    [
+      "--env",
+      "SYMPHONY_DESKTOP_RECORD=1",
+      "--env",
+      "SYMPHONY_RECORDINGS_DIR=#{container_recordings_dir(settings)}",
+      "--env",
+      "SYMPHONY_RECORD_FRAMERATE=#{settings.record_framerate}",
+      "--env",
+      "SYMPHONY_RECORD_SEGMENT_SECONDS=#{settings.record_segment_seconds}"
+    ]
+  end
+
+  defp recording_run_args(_settings), do: []
+
+  defp container_recordings_dir(%{recordings_dir: "/" <> _absolute = absolute}), do: absolute
+
+  defp container_recordings_dir(%{workspace_mount: workspace_mount, recordings_dir: recordings_dir}), do: Path.join(workspace_mount, recordings_dir)
 
   defp resolve_novnc_port(name, settings) do
     case engine_cmd(settings.engine, ["port", name, "#{settings.novnc_container_port}/tcp"]) do

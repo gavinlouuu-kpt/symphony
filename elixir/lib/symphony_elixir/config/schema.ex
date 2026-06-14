@@ -217,6 +217,10 @@ defmodule SymphonyElixir.Config.Schema do
       field(:extra_run_args, {:array, :string}, default: [])
       field(:features, {:array, :string}, default: ["auto"])
       field(:keep_pr_desktops, :boolean, default: true)
+      field(:record, :boolean, default: false)
+      field(:recordings_dir, :string, default: ".symphony/recordings")
+      field(:record_framerate, :integer, default: 10)
+      field(:record_segment_seconds, :integer, default: 60)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -235,12 +239,18 @@ defmodule SymphonyElixir.Config.Schema do
           :novnc_advertise_host,
           :extra_run_args,
           :features,
-          :keep_pr_desktops
+          :keep_pr_desktops,
+          :record,
+          :recordings_dir,
+          :record_framerate,
+          :record_segment_seconds
         ],
         empty_values: []
       )
       |> validate_inclusion(:engine, ["docker", "podman"])
       |> validate_number(:novnc_container_port, greater_than: 0)
+      |> validate_number(:record_framerate, greater_than: 0)
+      |> validate_number(:record_segment_seconds, greater_than: 0)
     end
   end
 

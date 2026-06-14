@@ -216,7 +216,9 @@ defmodule SymphonyElixirWeb.Presenter do
       engine: Map.get(container, :engine),
       workspace_mount: Map.get(container, :workspace_mount),
       novnc_port: Map.get(container, :novnc_port),
-      novnc_url: Map.get(container, :novnc_url)
+      novnc_url: Map.get(container, :novnc_url),
+      recording: Map.get(container, :recording, false),
+      recordings_path: Map.get(container, :recordings_path)
     }
   end
 

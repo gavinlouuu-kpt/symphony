@@ -42,6 +42,10 @@ container:
   novnc_advertise_host: null             # host used in dashboard URLs (defaults to novnc_host; "tailscale" supported)
   features: ["auto"]                     # reusable features to install; "auto" detects from the repo
   keep_pr_desktops: true                 # keep a finished issue's desktop alive until its PR is merged/closed
+  record: false                          # record the virtual desktop with ffmpeg for demo/review
+  recordings_dir: .symphony/recordings   # where recordings land (relative to the workspace mount)
+  record_framerate: 10                   # recording frame rate (fps)
+  record_segment_seconds: 60             # length of each recording segment
   extra_run_args:                        # appended verbatim to `docker run`
     - "--volume"
     - "/home/you/.codex/auth.json:/root/.codex/auth.json:ro"
@@ -116,6 +120,42 @@ retention to engage; when it cannot determine an open PR, the desktop is cleaned
 up as before. Set `keep_pr_desktops: false` to always tear desktops down at
 terminal state. Retention applies to desktops on the orchestrator host only;
 issues dispatched to `worker.ssh_hosts` keep the existing cleanup path.
+
+## Recording desktops for demo and review
+
+Set `container.record: true` to capture each agent's virtual desktop to video so
+runs can be replayed later for demos and PR review. When enabled, Symphony passes
+`SYMPHONY_DESKTOP_RECORD=1` (plus the recording directory, frame rate, and segment
+length) into the container, and the desktop entrypoint runs an `ffmpeg` `x11grab`
+capture of the display.
+
+- **Where recordings go.** By default recordings are written under the issue
+  workspace at `container.recordings_dir` (default `.symphony/recordings`).
+  Because the workspace is bind-mounted from the host, finished segments persist
+  on the host and outlive the container. An absolute `recordings_dir` keeps the
+  recording inside the container only (no host copy), so the dashboard cannot
+  serve it back.
+- **Segmented files.** Recordings are split into timestamped MP4 segments
+  (`desktop-<timestamp>.mp4`, `record_segment_seconds` long). Segmenting keeps
+  already-written chunks playable even when a container is force-removed at
+  cleanup, which would otherwise truncate a single growing file.
+- **Reviewing recordings.** Recordings for a running or blocked issue are listed
+  on its dashboard desktop card with direct playback links, and a red `● REC`
+  badge marks desktops that are actively recording. They are also available over
+  the JSON API:
+
+  ```text
+  GET /api/v1/<issue_identifier>/recordings            # list recordings (JSON)
+  GET /api/v1/<issue_identifier>/recordings/<filename> # stream one recording
+  ```
+
+  The streaming route resolves filenames safely within the issue's recordings
+  directory and refuses path traversal or symlinks that escape it.
+- **Lifecycle.** Recordings live with the workspace, so they share its retention
+  (see "Keeping PR desktops alive") and are removed when the workspace is reaped.
+- **Requirements.** The desktop image must include `ffmpeg`
+  (`symphony-agent-desktop` does). Recording adds CPU and disk overhead roughly
+  proportional to the frame rate and screen geometry.
 
 ## Remote access over Tailscale
 
