@@ -323,8 +323,11 @@ defmodule SymphonyElixir.ContainerRuntime do
       {:error, reason} ->
         # Remove the half-initialized container so a retry recreates it and
         # re-attempts the credential copy instead of reusing it.
-        engine_cmd(settings.engine, ["rm", "--force", name])
-        {:error, reason}
+        case engine_cmd(settings.engine, ["rm", "--force", name]) do
+          {:ok, {_output, 0}} -> {:error, reason}
+          {:ok, {output, status}} -> {:error, {:container_remove_failed, name, status, output}}
+          {:error, rm_reason} -> {:error, rm_reason}
+        end
     end
   end
 
