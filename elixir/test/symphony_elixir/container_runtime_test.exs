@@ -324,10 +324,37 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
     assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-44"]}
   end
 
+  test "ensure_started propagates the container removal failure when rm also fails after a bad credential copy", %{
+    codex_home: codex_home
+  } do
+    write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+
+    File.write!(Path.join(codex_home, "auth.json"), ~s({"tokens":{}}))
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"abc123def\n", 0}}
+        ["exec" | _] -> {:ok, {"", 0}}
+        ["cp" | _] -> {:ok, {"read-only file system", 1}}
+        ["rm" | _] -> {:ok, {"no such container", 1}}
+      end
+    end)
+
+    assert {:error, {:container_remove_failed, "symphony-agent-MT-48", 1, "no such container"}} =
+             ContainerRuntime.ensure_started("MT-48", "/tmp/workspaces/MT-48")
+
+    assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-48"]}
+  end
+
   test "ensure_started expands a tilde in an explicit codex_auth_file" do
     auth_name = "symphony-tilde-auth-#{System.unique_integer([:positive])}.json"
     auth_file = Path.join(System.user_home!(), auth_name)
-    File.write!(auth_file, ~s({"tokens":{}}))
+
     on_exit(fn -> File.rm(auth_file) end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
