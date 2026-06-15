@@ -357,7 +357,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                    "engine" => "docker",
                    "workspace_mount" => "/workspace",
                    "novnc_port" => 41_001,
-                   "novnc_url" => "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale"
+                   "novnc_url" => "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale",
+                   "recording" => true,
+                   "recordings_path" => "/workspaces/MT-HTTP/.symphony/recordings"
                  },
                  "session_id" => "thread-http",
                  "turn_count" => 7,
@@ -426,7 +428,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "engine" => "docker",
                  "workspace_mount" => "/workspace",
                  "novnc_port" => 41_001,
-                 "novnc_url" => "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale"
+                 "novnc_url" => "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale",
+                 "recording" => true,
+                 "recordings_path" => "/workspaces/MT-HTTP/.symphony/recordings"
                },
                "session_id" => "thread-http",
                "turn_count" => 7,
@@ -792,7 +796,9 @@ defmodule SymphonyElixir.ExtensionsTest do
             engine: "docker",
             workspace_mount: "/workspace",
             novnc_port: 41_001,
-            novnc_url: "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale"
+            novnc_url: "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale",
+            recording: true,
+            recordings_path: "/workspaces/MT-HTTP/.symphony/recordings"
           },
           codex_app_server_pid: nil,
           last_codex_message: "rendered",
