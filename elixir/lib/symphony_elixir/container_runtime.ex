@@ -286,7 +286,8 @@ defmodule SymphonyElixir.ContainerRuntime do
     with {:ok, auth_source} <- resolve_codex_auth_file(settings),
          {:ok, container_id} <- engine_run(name, issue_identifier, workspace, settings, bind_host),
          :ok <- provision_codex_auth(name, settings, auth_source) do
-      Logger.info("Started agent container container_name=#{name} image=#{settings.image} workspace=#{workspace}")
+      Logger.info("Started agent container container_name=#{name} issue_identifier=#{issue_identifier} image=#{settings.image} workspace=#{workspace}")
+
       {:ok, container_id}
     end
   end
@@ -323,8 +324,16 @@ defmodule SymphonyElixir.ContainerRuntime do
       {:error, reason} ->
         # Remove the half-initialized container so a retry recreates it and
         # re-attempts the credential copy instead of reusing it.
-        engine_cmd(settings.engine, ["rm", "--force", name])
-        {:error, reason}
+        case engine_cmd(settings.engine, ["rm", "--force", name]) do
+          {:ok, {_cleanup_output, 0}} ->
+            {:error, reason}
+
+          {:ok, {cleanup_output, cleanup_status}} ->
+            {:error, {:codex_auth_copy_cleanup_failed, reason, name, cleanup_status, cleanup_output}}
+
+          {:error, cleanup_reason} ->
+            {:error, {:codex_auth_copy_cleanup_failed, reason, name, cleanup_reason}}
+        end
     end
   end
 

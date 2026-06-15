@@ -324,6 +324,50 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
     assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-44"]}
   end
 
+  test "ensure_started surfaces cleanup failures after a credential copy failure", %{codex_home: codex_home} do
+    write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+
+    File.write!(Path.join(codex_home, "auth.json"), ~s({"tokens":{}}))
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"abc123def\n", 0}}
+        ["exec" | _] -> {:ok, {"", 0}}
+        ["cp" | _] -> {:ok, {"read-only file system", 1}}
+        ["rm" | _] -> {:ok, {"container busy", 1}}
+      end
+    end)
+
+    copy_reason = {:codex_auth_copy_failed, "symphony-agent-MT-48", 1, "read-only file system"}
+
+    assert {:error, {:codex_auth_copy_cleanup_failed, ^copy_reason, "symphony-agent-MT-48", 1, "container busy"}} =
+             ContainerRuntime.ensure_started("MT-48", "/tmp/workspaces/MT-48")
+
+    assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-48"]}
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"def456ghi\n", 0}}
+        ["exec" | _] -> {:ok, {"", 0}}
+        ["cp" | _] -> {:error, :engine_unreachable}
+        ["rm" | _] -> {:error, :cleanup_unreachable}
+      end
+    end)
+
+    assert {:error, {:codex_auth_copy_cleanup_failed, :engine_unreachable, "symphony-agent-MT-49", :cleanup_unreachable}} =
+             ContainerRuntime.ensure_started("MT-49", "/tmp/workspaces/MT-49")
+
+    assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-49"]}
+  end
+
   test "ensure_started expands a tilde in an explicit codex_auth_file" do
     auth_name = "symphony-tilde-auth-#{System.unique_integer([:positive])}.json"
     auth_file = Path.join(System.user_home!(), auth_name)

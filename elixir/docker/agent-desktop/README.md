@@ -32,7 +32,7 @@ fresh container at `/root/.codex/auth.json`, so no extra configuration is
 needed when the orchestrator host is logged in to Codex. Do not bind-mount
 `auth.json` instead — Codex rewrites the file when it refreshes its OAuth
 tokens, so mounted credentials break after the first refresh. See
-`docs/containers.md` for details.
+`../../docs/containers.md` for details.
 
 The orchestrator bind-mounts each issue workspace at `/workspace` inside the
 container and publishes the noVNC port on an ephemeral host port (bound to
