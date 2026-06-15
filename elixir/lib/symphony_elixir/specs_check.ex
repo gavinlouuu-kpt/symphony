@@ -99,6 +99,37 @@ defmodule SymphonyElixir.SpecsCheck do
   defp consume_form({:@, _, _}, state, _module_name, _file, _exemptions), do: state
 
   defp consume_form({:def, meta, [head_ast, _]} = _form, state, module_name, file, exemptions) do
+    check_def(meta, head_ast, state, module_name, file, exemptions)
+  end
+
+  # Head-only declaration clause: `def foo(args)` with no body. Used to declare
+  # default arguments for multi-clause functions. Must be spec-checked like a
+  # normal def but must NOT mark the function as seen, so subsequent
+  # implementation clauses can still be de-duplicated correctly.
+  defp consume_form({:def, _meta, [head_ast]}, state, _module_name, _file, _exemptions) do
+    {name, arity} = def_head_to_identifier(head_ast)
+    id = {name, arity}
+
+    if MapSet.member?(state.pending_specs, id) or state.pending_impl do
+      # Spec present: consume it and mark as seen so implementation clauses
+      # fall into the "already seen" fast path.
+      %{state | pending_specs: MapSet.new(), pending_impl: false, seen_defs: MapSet.put(state.seen_defs, id)}
+    else
+      # No spec yet: leave pending_specs alone and do not mark as seen; a
+      # subsequent @spec + implementation will be evaluated independently.
+      %{state | pending_specs: MapSet.new(), pending_impl: false}
+    end
+  end
+
+  defp consume_form({:defp, _, _}, state, _module_name, _file, _exemptions) do
+    %{state | pending_specs: MapSet.new(), pending_impl: false}
+  end
+
+  defp consume_form(_form, state, _module_name, _file, _exemptions) do
+    %{state | pending_specs: MapSet.new(), pending_impl: false}
+  end
+
+  defp check_def(meta, head_ast, state, module_name, file, exemptions) do
     {name, arity} = def_head_to_identifier(head_ast)
 
     id = {name, arity}
@@ -127,14 +158,6 @@ defmodule SymphonyElixir.SpecsCheck do
         %{next_state | findings: [finding | next_state.findings]}
       end
     end
-  end
-
-  defp consume_form({:defp, _, _}, state, _module_name, _file, _exemptions) do
-    %{state | pending_specs: MapSet.new(), pending_impl: false}
-  end
-
-  defp consume_form(_form, state, _module_name, _file, _exemptions) do
-    %{state | pending_specs: MapSet.new(), pending_impl: false}
   end
 
   defp compliant?(finding, state, exemptions) do

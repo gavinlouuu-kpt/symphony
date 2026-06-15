@@ -182,17 +182,17 @@ container:
   features: ["auto"]      # auto-detect & install make/docker/browser/… per repo
   keep_pr_desktops: true  # keep a finished issue's desktop alive until its PR merges/closes
   record: true            # record the virtual desktop with ffmpeg for demo/review
-  extra_run_args:
-    - "--volume"
-    - "/home/you/.codex/auth.json:/root/.codex/auth.json:ro"
 ```
+
+Codex credentials are copied from the host's `~/.codex/auth.json` into each
+fresh container automatically; do not bind-mount `auth.json` — Codex rewrites
+it on token refresh, so mounted credentials break.
 
 Enable `container.record` to capture each agent's virtual desktop to video for
 later demos and PR review. Recordings are written into the issue workspace as
 timestamped segments, listed on the dashboard desktop card with playback links
 (and a `● REC` badge while recording), and streamable via
-`GET /api/v1/<issue>/recordings`. See [`docs/containers.md`](docs/containers.md)
-for details.
+`GET /api/v1/<issue>/recordings`.
 
 A container orchestrator manages the desktop lifecycle in three phases: **setup**
 (detect what the repo needs — `make`, `docker`, a `browser`, etc. — and install

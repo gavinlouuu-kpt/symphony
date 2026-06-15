@@ -214,6 +214,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:novnc_container_port, :integer, default: 6080)
       field(:novnc_host, :string, default: "127.0.0.1")
       field(:novnc_advertise_host, :string)
+      field(:codex_auth_file, :string, default: "~/.codex/auth.json")
+      field(:codex_auth_container_path, :string, default: "/root/.codex/auth.json")
       field(:extra_run_args, {:array, :string}, default: [])
       field(:features, {:array, :string}, default: ["auto"])
       field(:keep_pr_desktops, :boolean, default: true)
@@ -237,6 +239,8 @@ defmodule SymphonyElixir.Config.Schema do
           :novnc_container_port,
           :novnc_host,
           :novnc_advertise_host,
+          :codex_auth_file,
+          :codex_auth_container_path,
           :extra_run_args,
           :features,
           :keep_pr_desktops,

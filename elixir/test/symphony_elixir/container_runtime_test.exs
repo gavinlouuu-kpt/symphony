@@ -4,13 +4,27 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
   alias SymphonyElixir.ContainerRuntime
 
   setup do
+    # Point the default Codex auth lookup at a private temp dir so tests do
+    # not pick up real credentials from the machine running the suite.
+    codex_home =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-container-codex-home-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(codex_home)
+    previous_codex_home = System.get_env("CODEX_HOME")
+    System.put_env("CODEX_HOME", codex_home)
+
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :container_command_runner)
       Application.delete_env(:symphony_elixir, :tailscale_command_runner)
       Application.delete_env(:symphony_elixir, :pull_request_resolver)
+      restore_env("CODEX_HOME", previous_codex_home)
+      File.rm_rf(codex_home)
     end)
 
-    :ok
+    {:ok, codex_home: codex_home}
   end
 
   test "container config defaults are disabled and sane" do
@@ -24,6 +38,8 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
     assert settings.novnc_container_port == 6080
     assert settings.novnc_host == "127.0.0.1"
     assert settings.novnc_advertise_host == nil
+    assert settings.codex_auth_file == "~/.codex/auth.json"
+    assert settings.codex_auth_container_path == "/root/.codex/auth.json"
     assert settings.extra_run_args == []
     assert settings.features == ["auto"]
     assert settings.keep_pr_desktops == true
@@ -181,6 +197,262 @@ defmodule SymphonyElixir.ContainerRuntimeTest do
 
     assert_received {:engine_cmd, "docker", ["run" | run_args]}
     assert "SYMPHONY_RECORDINGS_DIR=/var/recordings" in run_args
+  end
+
+  test "ensure_started copies the default Codex auth file into fresh containers", %{codex_home: codex_home} do
+    write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+
+    auth_file = Path.join(codex_home, "auth.json")
+    File.write!(auth_file, ~s({"tokens":{}}))
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"Error: no such container", 1}}
+        ["run" | _] -> {:ok, {"abc123def\n", 0}}
+        ["exec" | _] -> {:ok, {"", 0}}
+        ["cp" | _] -> {:ok, {"", 0}}
+        ["port" | _] -> {:ok, {"127.0.0.1:49160\n", 0}}
+      end
+    end)
+
+    assert {:ok, info} = ContainerRuntime.ensure_started("MT-40", "/tmp/workspaces/MT-40")
+    assert info.container_id == "abc123def"
+
+    assert_received {:engine_cmd, "docker", ["exec", "symphony-agent-MT-40", "mkdir", "-p", "/root/.codex"]}
+    assert_received {:engine_cmd, "docker", ["cp", ^auth_file, "symphony-agent-MT-40:/root/.codex/auth.json"]}
+  end
+
+  test "ensure_started does not overwrite credentials in a reused container", %{codex_home: codex_home} do
+    write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+
+    File.write!(Path.join(codex_home, "auth.json"), ~s({"tokens":{}}))
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"existing123 true\n", 0}}
+        ["port" | _] -> {:ok, {"127.0.0.1:41001\n", 0}}
+      end
+    end)
+
+    assert {:ok, info} = ContainerRuntime.ensure_started("MT-41", "/tmp/workspaces/MT-41")
+    assert info.container_id == "existing123"
+
+    refute_received {:engine_cmd, _engine, ["cp" | _]}
+  end
+
+  test "ensure_started skips the credential copy when the default auth file is absent or copying is disabled", %{
+    codex_home: codex_home
+  } do
+    write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"abc123def\n", 0}}
+        ["port" | _] -> {:ok, {"127.0.0.1:49160\n", 0}}
+      end
+    end)
+
+    assert {:ok, _info} = ContainerRuntime.ensure_started("MT-42", "/tmp/workspaces/MT-42")
+    refute_received {:engine_cmd, _engine, ["cp" | _]}
+
+    # An explicitly empty codex_auth_file disables the copy even when the
+    # default auth file exists.
+    File.write!(Path.join(codex_home, "auth.json"), ~s({"tokens":{}}))
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_codex_auth_file: ""
+    )
+
+    assert {:ok, _info} = ContainerRuntime.ensure_started("MT-42", "/tmp/workspaces/MT-42")
+    refute_received {:engine_cmd, _engine, ["cp" | _]}
+  end
+
+  test "ensure_started fails fast when an explicit codex_auth_file is missing" do
+    missing = Path.join(System.tmp_dir!(), "symphony-missing-auth-#{System.unique_integer([:positive])}.json")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_codex_auth_file: missing
+    )
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn _engine, args ->
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        other -> flunk("unexpected engine command #{inspect(other)}")
+      end
+    end)
+
+    assert {:error, {:codex_auth_file_not_found, ^missing}} =
+             ContainerRuntime.ensure_started("MT-43", "/tmp/workspaces/MT-43")
+  end
+
+  test "ensure_started removes the container when the credential copy fails", %{codex_home: codex_home} do
+    write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+
+    File.write!(Path.join(codex_home, "auth.json"), ~s({"tokens":{}}))
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"abc123def\n", 0}}
+        ["exec" | _] -> {:ok, {"", 0}}
+        ["cp" | _] -> {:ok, {"read-only file system", 1}}
+        ["rm" | _] -> {:ok, {"abc123def\n", 0}}
+      end
+    end)
+
+    assert {:error, {:codex_auth_copy_failed, "symphony-agent-MT-44", 1, "read-only file system"}} =
+             ContainerRuntime.ensure_started("MT-44", "/tmp/workspaces/MT-44")
+
+    assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-44"]}
+  end
+
+  test "ensure_started surfaces cleanup failures after a credential copy failure", %{codex_home: codex_home} do
+    write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+
+    File.write!(Path.join(codex_home, "auth.json"), ~s({"tokens":{}}))
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"abc123def\n", 0}}
+        ["exec" | _] -> {:ok, {"", 0}}
+        ["cp" | _] -> {:ok, {"read-only file system", 1}}
+        ["rm" | _] -> {:ok, {"container busy", 1}}
+      end
+    end)
+
+    copy_reason = {:codex_auth_copy_failed, "symphony-agent-MT-48", 1, "read-only file system"}
+
+    assert {:error, {:codex_auth_copy_cleanup_failed, ^copy_reason, "symphony-agent-MT-48", 1, "container busy"}} =
+             ContainerRuntime.ensure_started("MT-48", "/tmp/workspaces/MT-48")
+
+    assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-48"]}
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"def456ghi\n", 0}}
+        ["exec" | _] -> {:ok, {"", 0}}
+        ["cp" | _] -> {:error, :engine_unreachable}
+        ["rm" | _] -> {:error, :cleanup_unreachable}
+      end
+    end)
+
+    assert {:error, {:codex_auth_copy_cleanup_failed, :engine_unreachable, "symphony-agent-MT-49", :cleanup_unreachable}} =
+             ContainerRuntime.ensure_started("MT-49", "/tmp/workspaces/MT-49")
+
+    assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-49"]}
+  end
+
+  test "ensure_started expands a tilde in an explicit codex_auth_file" do
+    auth_name = "symphony-tilde-auth-#{System.unique_integer([:positive])}.json"
+    auth_file = Path.join(System.user_home!(), auth_name)
+    File.write!(auth_file, ~s({"tokens":{}}))
+    on_exit(fn -> File.rm(auth_file) end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_codex_auth_file: "~/#{auth_name}"
+    )
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"abc123def\n", 0}}
+        ["exec" | _] -> {:ok, {"", 0}}
+        ["cp" | _] -> {:ok, {"", 0}}
+        ["port" | _] -> {:ok, {"127.0.0.1:49160\n", 0}}
+      end
+    end)
+
+    assert {:ok, _info} = ContainerRuntime.ensure_started("MT-46", "/tmp/workspaces/MT-46")
+    assert_received {:engine_cmd, "docker", ["cp", ^auth_file, "symphony-agent-MT-46:/root/.codex/auth.json"]}
+  end
+
+  test "ensure_started surfaces engine failures during the credential copy", %{codex_home: codex_home} do
+    write_workflow_file!(Workflow.workflow_file_path(), container_enabled: true)
+
+    File.write!(Path.join(codex_home, "auth.json"), ~s({"tokens":{}}))
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"abc123def\n", 0}}
+        ["exec" | _] -> {:error, :engine_unreachable}
+        ["rm" | _] -> {:ok, {"abc123def\n", 0}}
+      end
+    end)
+
+    assert {:error, :engine_unreachable} = ContainerRuntime.ensure_started("MT-47", "/tmp/workspaces/MT-47")
+    assert_received {:engine_cmd, "docker", ["rm", "--force", "symphony-agent-MT-47"]}
+  end
+
+  test "ensure_started copies an explicitly configured auth file to a custom container path" do
+    auth_file =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-custom-auth-#{System.unique_integer([:positive])}.json"
+      )
+
+    File.write!(auth_file, ~s({"tokens":{}}))
+    on_exit(fn -> File.rm(auth_file) end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      container_enabled: true,
+      container_codex_auth_file: auth_file,
+      container_codex_auth_container_path: "/home/agent/.codex/auth.json"
+    )
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :container_command_runner, fn engine, args ->
+      send(test_pid, {:engine_cmd, engine, args})
+
+      case args do
+        ["inspect" | _] -> {:ok, {"", 1}}
+        ["run" | _] -> {:ok, {"abc123def\n", 0}}
+        ["exec" | _] -> {:ok, {"", 0}}
+        ["cp" | _] -> {:ok, {"", 0}}
+        ["port" | _] -> {:ok, {"127.0.0.1:49160\n", 0}}
+      end
+    end)
+
+    assert {:ok, _info} = ContainerRuntime.ensure_started("MT-45", "/tmp/workspaces/MT-45")
+
+    assert_received {:engine_cmd, "docker", ["exec", "symphony-agent-MT-45", "mkdir", "-p", "/home/agent/.codex"]}
+    assert_received {:engine_cmd, "docker", ["cp", ^auth_file, "symphony-agent-MT-45:/home/agent/.codex/auth.json"]}
   end
 
   test "ensure_started binds and advertises via Tailscale when novnc_host is tailscale" do

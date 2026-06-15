@@ -40,15 +40,15 @@ container:
   novnc_container_port: 6080             # noVNC port inside the container
   novnc_host: 127.0.0.1                  # host interface the noVNC port binds to ("tailscale" supported)
   novnc_advertise_host: null             # host used in dashboard URLs (defaults to novnc_host; "tailscale" supported)
+  codex_auth_file: ~/.codex/auth.json    # host Codex credentials copied into fresh containers ("" disables)
+  codex_auth_container_path: /root/.codex/auth.json # where the copy lands inside the container
   features: ["auto"]                     # reusable features to install; "auto" detects from the repo
   keep_pr_desktops: true                 # keep a finished issue's desktop alive until its PR is merged/closed
   record: false                          # record the virtual desktop with ffmpeg for demo/review
   recordings_dir: .symphony/recordings   # where recordings land (relative to the workspace mount)
   record_framerate: 10                   # recording frame rate (fps)
   record_segment_seconds: 60             # length of each recording segment
-  extra_run_args:                        # appended verbatim to `docker run`
-    - "--volume"
-    - "/home/you/.codex/auth.json:/root/.codex/auth.json:ro"
+  extra_run_args: []                     # appended verbatim to `docker run`
 ```
 
 Build the default desktop image with:
@@ -56,6 +56,40 @@ Build the default desktop image with:
 ```bash
 docker build -t symphony-agent-desktop:latest elixir/docker/agent-desktop
 ```
+
+## Codex credentials
+
+When a container is created, Symphony copies the host's Codex auth file
+(`container.codex_auth_file`, default `~/.codex/auth.json`; `$CODEX_HOME` is
+honored for the default) into the container at
+`container.codex_auth_container_path` (default `/root/.codex/auth.json`).
+Each container therefore gets its own private, writable copy of the
+credentials.
+
+Do **not** bind-mount `auth.json` into the container via `extra_run_args`.
+Codex rewrites `auth.json` whenever it refreshes its OAuth tokens, so a
+read-only mount makes the refresh fail (agents start breaking with auth
+errors once the access token expires), and even a read-write single-file
+mount goes stale because Codex replaces the file via rename — the mount keeps
+pointing at the old inode. If you previously mounted `auth.json` this way,
+remove the `--volume` entry from `extra_run_args`; the automatic copy
+replaces it.
+
+Notes:
+
+- The copy only happens when a container is created. A container reused
+  across turns keeps the credentials it already has (including any tokens
+  Codex refreshed inside the container).
+- If the default auth file does not exist, the copy is skipped silently —
+  use this together with an API key passed via
+  `extra_run_args: ["--env", "OPENAI_API_KEY=..."]` if you authenticate with
+  an API key instead.
+- If you set `codex_auth_file` explicitly and the file is missing, container
+  start fails with `codex_auth_file_not_found` so the misconfiguration is
+  surfaced immediately.
+- Set `codex_auth_file: ""` to disable the copy entirely.
+- If your image runs Codex as a non-root user, point
+  `codex_auth_container_path` at that user's `~/.codex/auth.json`.
 
 ## Container orchestrator: setup, debug, review
 
@@ -205,9 +239,18 @@ docker exec -it symphony-agent-<ISSUE> bash -lc 'cd /workspace && codex app-serv
 Common causes:
 
 - **Missing credentials** (`401`, "Not logged in", or an immediate exit):
-  Codex inside the container has no auth. Mount your `auth.json` read-only via
-  `container.extra_run_args` (see above), or pass an API key env var with
-  `--env`.
+  Codex inside the container has no auth. Make sure `~/.codex/auth.json`
+  exists on the orchestrator host (or set `container.codex_auth_file`) so
+  Symphony copies it into the container at start, or pass an API key env var
+  with `extra_run_args: ["--env", ...]`. If the host file appeared after the
+  container was created, remove the container (or let the issue finish) so
+  the next start picks it up.
+- **Auth works at first, then breaks with token-refresh errors**: this is the
+  signature of a bind-mounted `auth.json` (an older recommended setup). Codex
+  cannot rewrite a read-only mounted file when it refreshes its OAuth tokens,
+  and a read-write single-file mount goes stale once the file is replaced via
+  rename. Remove the `--volume .../auth.json` entry from `extra_run_args` and
+  rely on the automatic credential copy instead (see "Codex credentials").
 - **Sandbox errors** ("sandbox error", Landlock/seccomp failures, or every
   shell command failing with "Operation not permitted"): Codex's own sandbox
   often cannot initialize under Docker's default seccomp profile. Since the
@@ -235,8 +278,9 @@ Common causes:
 
 - Container mode applies to agents running on the orchestrator host. Issues
   dispatched to `worker.ssh_hosts` keep the existing SSH execution path.
-- Codex inside the container needs credentials; mount `auth.json` (or pass an
-  API key env var) via `extra_run_args`.
+- Codex inside the container needs credentials; Symphony copies the host's
+  `auth.json` into fresh containers automatically (see "Codex credentials"),
+  or you can pass an API key env var via `extra_run_args`.
 - The noVNC endpoint is unauthenticated. Keep `novnc_host` on `127.0.0.1`
   unless you front it with an authenticating proxy; anyone who can reach the
   port (or the dashboard embedding it) can drive the agent's desktop.
