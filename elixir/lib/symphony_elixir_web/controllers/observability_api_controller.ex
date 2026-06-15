@@ -24,6 +24,11 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec events(Conn.t(), map()) :: Conn.t()
+  def events(conn, %{"issue_identifier" => issue_identifier}) do
+    json(conn, %{issue_identifier: issue_identifier, events: Presenter.events_payload(issue_identifier)})
+  end
+
   @spec refresh(Conn.t(), map()) :: Conn.t()
   def refresh(conn, _params) do
     case Presenter.refresh_payload(orchestrator()) do

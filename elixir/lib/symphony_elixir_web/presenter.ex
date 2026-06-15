@@ -3,7 +3,9 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, EventLog, Orchestrator, StatusDashboard}
+
+  @recent_events_limit 25
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -82,10 +84,20 @@ defmodule SymphonyElixirWeb.Presenter do
       logs: %{
         codex_session_logs: []
       },
-      recent_events: recent_events_payload(running || blocked),
+      recent_events: recent_events_payload(issue_identifier, running || blocked),
       last_error: (blocked && blocked.error) || (retry && retry.error),
       tracked: %{}
     }
+  end
+
+  @doc """
+  Full transcript of recorded events for an issue, oldest first.
+  """
+  @spec events_payload(String.t()) :: [map()]
+  def events_payload(issue_identifier) when is_binary(issue_identifier) do
+    issue_identifier
+    |> EventLog.list()
+    |> Enum.map(&event_payload/1)
   end
 
   defp issue_id_from_entries(running, retry, blocked),
@@ -224,9 +236,16 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp container_payload(_container), do: nil
 
-  defp recent_events_payload(nil), do: []
+  defp recent_events_payload(issue_identifier, entry) do
+    case EventLog.list(issue_identifier, limit: @recent_events_limit) do
+      [] -> fallback_recent_events(entry)
+      events -> Enum.map(events, &event_payload/1)
+    end
+  end
 
-  defp recent_events_payload(entry) do
+  defp fallback_recent_events(nil), do: []
+
+  defp fallback_recent_events(entry) do
     [
       %{
         at: iso8601(entry.last_codex_timestamp),
@@ -235,6 +254,16 @@ defmodule SymphonyElixirWeb.Presenter do
       }
     ]
     |> Enum.reject(&is_nil(&1.at))
+  end
+
+  defp event_payload(event) do
+    %{
+      seq: event.seq,
+      at: event.at,
+      event: event.event,
+      message: event.message,
+      session_id: event.session_id
+    }
   end
 
   defp summarize_message(nil), do: nil

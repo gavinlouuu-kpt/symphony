@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, ContainerOrchestrator, ContainerRuntime, Linear.Issue}
-  alias SymphonyElixir.{StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{EventLog, StatusDashboard, Tracker, Workspace}
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -173,6 +173,7 @@ defmodule SymphonyElixir.Orchestrator do
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
 
+        record_codex_event(updated_running_entry, update)
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
     end
@@ -1471,6 +1472,21 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp blocked_issue_state(%{issue: %Issue{state: state}}), do: state
   defp blocked_issue_state(_metadata), do: nil
+
+  defp record_codex_event(running_entry, update) do
+    identifier = Map.get(running_entry, :identifier)
+
+    if is_binary(identifier) and EventLog.significant?(update[:event]) do
+      EventLog.record(identifier, %{
+        event: update[:event],
+        message: StatusDashboard.humanize_codex_message(summarize_codex_update(update)),
+        session_id: Map.get(running_entry, :session_id),
+        codex_timestamp: update[:timestamp]
+      })
+    else
+      :ok
+    end
+  end
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)

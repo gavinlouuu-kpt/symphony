@@ -584,3 +584,47 @@ pre,
     grid-template-columns: 1fr;
   }
 }
+
+.issue-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.transcript-wrap {
+  overflow-y: auto;
+  max-height: 80vh;
+  padding-right: 0.4rem;
+}
+
+.transcript-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.transcript-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.6rem 0.75rem;
+  background: var(--card-muted, rgba(148, 163, 184, 0.08));
+}
+
+.transcript-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.78rem;
+}
+
+.transcript-message {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  word-break: break-word;
+}
