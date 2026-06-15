@@ -121,6 +121,14 @@ defmodule SymphonyElixir.SpecsCheck do
     end
   end
 
+  defp consume_form({:defp, _, _}, state, _module_name, _file, _exemptions) do
+    %{state | pending_specs: MapSet.new(), pending_impl: false}
+  end
+
+  defp consume_form(_form, state, _module_name, _file, _exemptions) do
+    %{state | pending_specs: MapSet.new(), pending_impl: false}
+  end
+
   defp check_def(meta, head_ast, state, module_name, file, exemptions) do
     {name, arity} = def_head_to_identifier(head_ast)
 
@@ -150,14 +158,6 @@ defmodule SymphonyElixir.SpecsCheck do
         %{next_state | findings: [finding | next_state.findings]}
       end
     end
-  end
-
-  defp consume_form({:defp, _, _}, state, _module_name, _file, _exemptions) do
-    %{state | pending_specs: MapSet.new(), pending_impl: false}
-  end
-
-  defp consume_form(_form, state, _module_name, _file, _exemptions) do
-    %{state | pending_specs: MapSet.new(), pending_impl: false}
   end
 
   defp compliant?(finding, state, exemptions) do
