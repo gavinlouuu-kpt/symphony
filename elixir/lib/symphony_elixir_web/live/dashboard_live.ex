@@ -16,6 +16,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
       |> assign(:focused_desktop, nil)
+      |> assign(:focused_transcript, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -50,6 +51,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_event("open_transcript", %{"issue" => issue_identifier}, socket) do
+    {:noreply, assign(socket, :focused_transcript, issue_identifier)}
+  end
+
+  @impl true
+  def handle_event("close_transcript", _params, socket) do
+    {:noreply, assign(socket, :focused_transcript, nil)}
+  end
+
+  @impl true
   def render(assigns) do
     desktops = desktop_entries(assigns.payload)
 
@@ -57,6 +68,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       assigns
       |> assign(:desktops, desktops)
       |> assign(:focused_entry, focused_desktop_entry(desktops, assigns.focused_desktop))
+      |> assign(:transcript_events, transcript_events(assigns.focused_transcript))
 
     ~H"""
     <section class="dashboard-shell">
@@ -231,6 +243,37 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         <% end %>
 
+        <%= if @focused_transcript do %>
+          <div class="desktop-overlay">
+            <div class="desktop-overlay-panel">
+              <header class="desktop-overlay-header">
+                <div class="issue-stack">
+                  <span class="issue-id"><%= @focused_transcript %></span>
+                  <span class="muted">Run transcript · most recent activity</span>
+                </div>
+                <button type="button" class="subtle-button" phx-click="close_transcript">
+                  Close
+                </button>
+              </header>
+              <div class="transcript-wrap">
+                <%= if @transcript_events == [] do %>
+                  <p class="empty-state">No events recorded yet.</p>
+                <% else %>
+                  <ol class="transcript-list">
+                    <li :for={event <- @transcript_events} class="transcript-item">
+                      <div class="transcript-meta">
+                        <span class="mono numeric"><%= event.at || "n/a" %></span>
+                        <span class="muted mono"><%= event.event || "event" %></span>
+                      </div>
+                      <p class="transcript-message"><%= event.message || to_string(event.event || "n/a") %></p>
+                    </li>
+                  </ol>
+                <% end %>
+              </div>
+            </div>
+          </div>
+        <% end %>
+
         <section class="section-card">
           <div class="section-header">
             <div>
@@ -278,7 +321,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <div class="issue-actions">
+                          <button
+                            type="button"
+                            class="subtle-button"
+                            phx-click="open_transcript"
+                            phx-value-issue={entry.issue_identifier}
+                          >
+                            Transcript
+                          </button>
+                          <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        </div>
                       </div>
                     </td>
                     <td>
@@ -479,6 +532,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       {:error, _reason} -> []
     end
   end
+
+  defp transcript_events(nil), do: []
+  defp transcript_events(issue_identifier), do: Enum.reverse(Presenter.events_payload(issue_identifier))
 
   defp focused_desktop_entry(_desktops, nil), do: nil
 
