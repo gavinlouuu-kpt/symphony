@@ -1576,6 +1576,63 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
   end
 
+  test "status dashboard surfaces codex stream/transport error messages" do
+    stream_error = %{
+      event: :notification,
+      message: %{
+        "method" => "codex/event/error",
+        "params" => %{
+          "msg" => %{
+            "type" => "error",
+            "message" => "stream disconnected before completion: retrying sampling request"
+          }
+        }
+      }
+    }
+
+    typed_stream_error = %{
+      event: :notification,
+      message: %{
+        "method" => "codex/event/stream_error",
+        "params" => %{
+          "msg" => %{
+            "type" => "stream_error",
+            "message" => "stream disconnected - retrying sampling request"
+          }
+        }
+      }
+    }
+
+    nested_error = %{
+      event: :notification,
+      message: %{
+        "method" => "error",
+        "params" => %{"error" => %{"message" => "request timed out connecting to backend"}}
+      }
+    }
+
+    assert StatusDashboard.humanize_codex_message(stream_error) =~
+             "error: stream disconnected before completion: retrying sampling request"
+
+    assert StatusDashboard.humanize_codex_message(typed_stream_error) =~
+             "stream error: stream disconnected - retrying sampling request"
+
+    assert StatusDashboard.humanize_codex_message(nested_error) =~
+             "error: request timed out connecting to backend"
+  end
+
+  test "status dashboard falls back to label when codex error carries no message" do
+    bare_error = %{
+      event: :notification,
+      message: %{
+        "method" => "codex/event/error",
+        "params" => %{"msg" => %{"type" => "error"}}
+      }
+    }
+
+    assert StatusDashboard.humanize_codex_message(bare_error) == "error"
+  end
+
   test "status dashboard humanizes dynamic tool wrapper events" do
     completed = %{
       event: :tool_call_completed,
