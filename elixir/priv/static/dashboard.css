@@ -329,10 +329,43 @@ pre,
 .issue-stack,
 .session-stack,
 .detail-stack,
+.sandbox-stack,
 .token-stack {
   display: grid;
   gap: 0.24rem;
   min-width: 0;
+}
+
+.sandbox-name,
+.workspace-text {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.sandbox-host {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 0.82rem;
+}
+
+.sandbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.sandbox-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.7rem;
+  padding: 0.18rem 0.48rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  font-weight: 600;
 }
 
 .event-text {

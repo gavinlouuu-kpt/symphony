@@ -108,6 +108,7 @@ defmodule SymphonyElixir.TestSupport do
           worker_max_concurrent_agents_per_host: nil,
           cua_driver: "docker",
           cua_executable: "docker",
+          cua_host: "127.0.0.1",
           cua_image: "symphony-cua-worker:latest",
           cua_name_prefix: "symphony",
           cua_ssh_user: "cua",
@@ -167,6 +168,7 @@ defmodule SymphonyElixir.TestSupport do
     worker_max_concurrent_agents_per_host = Keyword.get(config, :worker_max_concurrent_agents_per_host)
     cua_driver = Keyword.get(config, :cua_driver)
     cua_executable = Keyword.get(config, :cua_executable)
+    cua_host = Keyword.get(config, :cua_host)
     cua_image = Keyword.get(config, :cua_image)
     cua_name_prefix = Keyword.get(config, :cua_name_prefix)
     cua_ssh_user = Keyword.get(config, :cua_ssh_user)
@@ -227,6 +229,7 @@ defmodule SymphonyElixir.TestSupport do
         cua_yaml(
           cua_driver,
           cua_executable,
+          cua_host,
           cua_image,
           cua_name_prefix,
           cua_ssh_user,
@@ -327,6 +330,7 @@ defmodule SymphonyElixir.TestSupport do
   defp cua_yaml(
          "docker",
          "docker",
+         "127.0.0.1",
          "symphony-cua-worker:latest",
          "symphony",
          "cua",
@@ -351,6 +355,7 @@ defmodule SymphonyElixir.TestSupport do
   defp cua_yaml(
          driver,
          executable,
+         host,
          image,
          name_prefix,
          ssh_user,
@@ -373,6 +378,7 @@ defmodule SymphonyElixir.TestSupport do
       "cua:",
       "  driver: #{yaml_value(driver)}",
       "  executable: #{yaml_value(executable)}",
+      "  host: #{yaml_value(host)}",
       "  image: #{yaml_value(image)}",
       "  name_prefix: #{yaml_value(name_prefix)}",
       "  ssh_user: #{yaml_value(ssh_user)}",

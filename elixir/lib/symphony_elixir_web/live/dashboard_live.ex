@@ -126,6 +126,57 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="section-card">
           <div class="section-header">
             <div>
+              <h2 class="section-title">CUA sandboxes</h2>
+              <p class="section-copy">Live sandbox desktops and service endpoints retained with their issue until terminal cleanup.</p>
+            </div>
+          </div>
+
+          <%= if @payload.sandboxes == [] do %>
+            <p class="empty-state">No active CUA sandboxes.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 920px;">
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>Sandbox</th>
+                    <th>Issue status</th>
+                    <th>Workspace</th>
+                    <th>Worker</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @payload.sandboxes}>
+                    <td>
+                      <div class="issue-stack">
+                        <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                      </div>
+                    </td>
+                    <td>
+                      <.sandbox_links sandbox={entry.sandbox} />
+                    </td>
+                    <td>
+                      <span class={state_badge_class(entry.issue_status)}>
+                        <%= entry.issue_status %>
+                      </span>
+                    </td>
+                    <td>
+                      <span class="mono muted workspace-text"><%= entry.workspace_path || "n/a" %></span>
+                    </td>
+                    <td>
+                      <span class="mono muted workspace-text"><%= entry.worker_host || "n/a" %></span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
               <h2 class="section-title">Running sessions</h2>
               <p class="section-copy">Active issues, last known agent activity, and token usage.</p>
             </div>
@@ -384,15 +435,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:status, sandbox_value(assigns.sandbox, :status) || sandbox_value(assigns.sandbox, :source))
       |> assign(:novnc_href, external_issue_url(sandbox_value(assigns.sandbox, :novnc_url)))
       |> assign(:api_href, external_issue_url(sandbox_value(assigns.sandbox, :api_url)))
+      |> assign(:host, sandbox_value(assigns.sandbox, :host))
+      |> assign(:ssh_target, sandbox_value(assigns.sandbox, :ssh_target))
+      |> assign(:lifecycle, sandbox_lifecycle_label(sandbox_value(assigns.sandbox, :lifecycle)))
 
     ~H"""
     <%= if @sandbox do %>
-      <div class="detail-stack">
-        <span class="mono"><%= @name %></span>
-        <span :if={@status} class="muted"><%= @status %></span>
-        <span>
-          <a :if={@novnc_href} class="issue-link" href={@novnc_href} target="_blank" rel="noopener noreferrer">noVNC</a>
-          <a :if={@api_href} class="issue-link" href={@api_href} target="_blank" rel="noopener noreferrer">API</a>
+      <div class="sandbox-stack">
+        <span class="mono sandbox-name"><%= @name %></span>
+        <span :if={@status || @lifecycle} class="muted">
+          <%= Enum.reject([@status, @lifecycle], &is_nil/1) |> Enum.join(" · ") %>
+        </span>
+        <span :if={@host} class="mono muted sandbox-host"><%= @host %></span>
+        <span :if={@ssh_target} class="mono muted sandbox-host"><%= @ssh_target %></span>
+        <span class="sandbox-actions">
+          <a :if={@novnc_href} class="issue-link sandbox-link" href={@novnc_href} target="_blank" rel="noopener noreferrer">Open noVNC</a>
+          <a :if={@api_href} class="issue-link sandbox-link" href={@api_href} target="_blank" rel="noopener noreferrer">API</a>
         </span>
       </div>
     <% else %>
@@ -406,6 +464,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp sandbox_value(sandbox, key) when is_map(sandbox) do
     Map.get(sandbox, key) || Map.get(sandbox, to_string(key))
   end
+
+  defp sandbox_lifecycle_label("delete_on_terminal"), do: "closes when terminal"
+  defp sandbox_lifecycle_label("preserve"), do: "kept for inspection"
+  defp sandbox_lifecycle_label(value) when is_binary(value) and value != "", do: value
+  defp sandbox_lifecycle_label(_value), do: nil
 
   defp external_issue_url(url) when is_binary(url) do
     url = String.trim(url)

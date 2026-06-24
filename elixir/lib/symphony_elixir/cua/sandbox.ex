@@ -6,7 +6,6 @@ defmodule SymphonyElixir.Cua.Sandbox do
   alias SymphonyElixir.{Config, SSH}
   alias SymphonyElixir.Linear.Issue
 
-  @host "127.0.0.1"
   @container_ports %{
     ssh: 22,
     vnc: 5901,
@@ -114,6 +113,8 @@ defmodule SymphonyElixir.Cua.Sandbox do
   end
 
   defp docker_run_args(name, issue_context, ports, cua) do
+    host = cua_host(cua)
+
     [
       "run",
       "-d",
@@ -126,13 +127,13 @@ defmodule SymphonyElixir.Cua.Sandbox do
       "--label",
       "symphony.issue_identifier=#{issue_context.issue_identifier || ""}",
       "-p",
-      "#{@host}:#{ports.ssh}:#{@container_ports.ssh}",
+      "#{host}:#{ports.ssh}:#{@container_ports.ssh}",
       "-p",
-      "#{@host}:#{ports.vnc}:#{@container_ports.vnc}",
+      "#{host}:#{ports.vnc}:#{@container_ports.vnc}",
       "-p",
-      "#{@host}:#{ports.novnc}:#{@container_ports.novnc}",
+      "#{host}:#{ports.novnc}:#{@container_ports.novnc}",
       "-p",
-      "#{@host}:#{ports.api}:#{@container_ports.api}"
+      "#{host}:#{ports.api}:#{@container_ports.api}"
     ] ++
       env_args(cua.env) ++
       mounted_secret_args(cua) ++
@@ -220,7 +221,8 @@ defmodule SymphonyElixir.Cua.Sandbox do
   end
 
   defp runtime(name, ports, cua) do
-    ssh_target = "#{cua.ssh_user}@#{@host}:#{ports.ssh}"
+    host = cua_host(cua)
+    ssh_target = "#{cua.ssh_user}@#{host}:#{ports.ssh}"
 
     %{
       worker_host: ssh_target,
@@ -230,19 +232,32 @@ defmodule SymphonyElixir.Cua.Sandbox do
         driver: "docker",
         source: "docker",
         status: "running",
-        host: @host,
+        host: host,
         ssh_target: ssh_target,
         ssh_port: ports.ssh,
-        vnc_url: maybe_url("vnc", ports.vnc),
-        novnc_url: maybe_url("http", ports.novnc),
-        api_url: maybe_url("http", ports.api)
+        lifecycle: sandbox_lifecycle(cua),
+        vnc_url: maybe_url("vnc", host, ports.vnc),
+        novnc_url: maybe_url("http", host, ports.novnc),
+        api_url: maybe_url("http", host, ports.api)
       }
     }
   end
 
-  defp maybe_url(_scheme, nil), do: nil
-  defp maybe_url("vnc", port), do: "vnc://#{@host}:#{port}"
-  defp maybe_url("http", port), do: "http://#{@host}:#{port}/"
+  defp maybe_url(_scheme, _host, nil), do: nil
+  defp maybe_url("vnc", host, port), do: "vnc://#{host}:#{port}"
+  defp maybe_url("http", host, port), do: "http://#{host}:#{port}/"
+
+  defp sandbox_lifecycle(%{delete_on_terminal: true}), do: "delete_on_terminal"
+  defp sandbox_lifecycle(_cua), do: "preserve"
+
+  defp cua_host(%{host: host}) when is_binary(host) do
+    case String.trim(host) do
+      "" -> "127.0.0.1"
+      value -> value
+    end
+  end
+
+  defp cua_host(_cua), do: "127.0.0.1"
 
   defp reserve_ports(cua, name) do
     span = cua.port_span
@@ -259,7 +274,7 @@ defmodule SymphonyElixir.Cua.Sandbox do
         api: cua.api_port_start + offset
       }
 
-      if host_ports_available?(ports), do: ports
+      if host_ports_available?(ports, cua_host(cua)), do: ports
     end)
     |> case do
       nil -> {:error, {:no_available_cua_ports, span}}
@@ -267,14 +282,14 @@ defmodule SymphonyElixir.Cua.Sandbox do
     end
   end
 
-  defp host_ports_available?(ports) do
-    Enum.all?(ports, fn {_key, port} -> valid_port?(port) and host_port_available?(port) end)
+  defp host_ports_available?(ports, host) do
+    Enum.all?(ports, fn {_key, port} -> valid_port?(port) and host_port_available?(host, port) end)
   end
 
   defp valid_port?(port), do: is_integer(port) and port > 0 and port <= 65_535
 
-  defp host_port_available?(port) do
-    case :gen_tcp.listen(port, [:binary, active: false, ip: {127, 0, 0, 1}, reuseaddr: true]) do
+  defp host_port_available?(host, port) do
+    case :gen_tcp.listen(port, [:binary, active: false, ip: listen_ip(host), reuseaddr: true]) do
       {:ok, socket} ->
         :gen_tcp.close(socket)
         true
@@ -283,6 +298,15 @@ defmodule SymphonyElixir.Cua.Sandbox do
         false
     end
   end
+
+  defp listen_ip(host) when is_binary(host) do
+    case :inet.parse_address(String.to_charlist(host)) do
+      {:ok, ip} when tuple_size(ip) == 4 -> ip
+      _ -> {127, 0, 0, 1}
+    end
+  end
+
+  defp listen_ip(_host), do: {127, 0, 0, 1}
 
   defp maybe_wait_for_ssh(executable, name, cua) do
     with {:ok, ports} <- published_ports(executable, name) do
@@ -297,8 +321,8 @@ defmodule SymphonyElixir.Cua.Sandbox do
       port when is_integer(port) ->
         deadline = deadline_ms(cua.launch_timeout_ms)
 
-        with :ok <- wait_for_tcp(port, deadline) do
-          wait_for_ssh("#{cua.ssh_user}@#{@host}:#{port}", deadline)
+        with :ok <- wait_for_tcp(cua_host(cua), port, deadline) do
+          wait_for_ssh("#{cua.ssh_user}@#{cua_host(cua)}:#{port}", deadline)
         end
 
       _ ->
@@ -306,8 +330,8 @@ defmodule SymphonyElixir.Cua.Sandbox do
     end
   end
 
-  defp wait_for_tcp(port, deadline_ms) do
-    case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false], 1_000) do
+  defp wait_for_tcp(host, port, deadline_ms) do
+    case :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false], 1_000) do
       {:ok, socket} ->
         :gen_tcp.close(socket)
         :ok
@@ -317,7 +341,7 @@ defmodule SymphonyElixir.Cua.Sandbox do
           {:error, {:cua_ssh_not_ready, port, reason}}
         else
           Process.sleep(250)
-          wait_for_tcp(port, deadline_ms)
+          wait_for_tcp(host, port, deadline_ms)
         end
     end
   end

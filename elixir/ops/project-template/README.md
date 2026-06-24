@@ -40,6 +40,7 @@ SYMPHONY_SOURCE_REPO_URL=...
 SYMPHONY_INSTANCE_ID=biowork
 SYMPHONY_INSTANCE_ROOT=/home/gavin/Service/symphony/biowork
 SYMPHONY_DASHBOARD_PORT=4401
+SYMPHONY_CUA_HOST=127.0.0.1
 SYMPHONY_CUA_NAME_PREFIX=symphony-biowork
 ```
 
@@ -49,6 +50,7 @@ Each project instance should have a unique:
 - `SYMPHONY_INSTANCE_ROOT`
 - `SYMPHONY_DASHBOARD_PORT`
 - `SYMPHONY_WORKSPACE_ROOT`
+- `SYMPHONY_CUA_HOST` when noVNC/API links must be reachable from another machine
 - `SYMPHONY_CUA_NAME_PREFIX`
 
 Run checks:
@@ -144,6 +146,15 @@ host and uses sandbox tools to operate inside CUA.
 ## Dashboard
 
 The dashboard listens on `SYMPHONY_DASHBOARD_HOST:SYMPHONY_DASHBOARD_PORT`.
+
+The dashboard also renders a CUA sandbox inventory for running, retrying, and blocked issues. Set
+`SYMPHONY_CUA_HOST` to a reachable host such as the same Tailscale/LAN address used by the dashboard
+when operators need to open noVNC/API links from another machine. The default `127.0.0.1` keeps CUA
+ports local-only.
+
+The template defaults `SYMPHONY_CUA_DELETE_ON_TERMINAL=true`, so CUA containers are preserved during
+running, retrying, blocked, and non-terminal review states, then closed when the Linear issue reaches
+a configured terminal state.
 
 Use a distinct port per project instance, for example:
 

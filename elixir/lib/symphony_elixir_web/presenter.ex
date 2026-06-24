@@ -21,6 +21,7 @@ defmodule SymphonyElixirWeb.Presenter do
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
+          sandboxes: sandbox_inventory(snapshot),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
         }
@@ -232,6 +233,7 @@ defmodule SymphonyElixirWeb.Presenter do
       host: Map.get(sandbox, :host) || Map.get(sandbox, "host"),
       ssh_target: Map.get(sandbox, :ssh_target) || Map.get(sandbox, "ssh_target"),
       ssh_port: Map.get(sandbox, :ssh_port) || Map.get(sandbox, "ssh_port"),
+      lifecycle: Map.get(sandbox, :lifecycle) || Map.get(sandbox, "lifecycle"),
       vnc_url: Map.get(sandbox, :vnc_url) || Map.get(sandbox, "vnc_url"),
       novnc_url: Map.get(sandbox, :novnc_url) || Map.get(sandbox, "novnc_url"),
       api_url: Map.get(sandbox, :api_url) || Map.get(sandbox, "api_url")
@@ -241,6 +243,35 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp sandbox_payload(_sandbox), do: nil
+
+  defp sandbox_inventory(snapshot) do
+    []
+    |> Kernel.++(Enum.map(snapshot.running, &sandbox_inventory_entry(&1, "running")))
+    |> Kernel.++(Enum.map(snapshot.retrying, &sandbox_inventory_entry(&1, "retrying")))
+    |> Kernel.++(Enum.map(Map.get(snapshot, :blocked, []), &sandbox_inventory_entry(&1, "blocked")))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(fn entry ->
+      entry.sandbox[:name] || entry.sandbox["name"] || {entry.issue_id, entry.issue_status}
+    end)
+  end
+
+  defp sandbox_inventory_entry(entry, issue_status) when is_map(entry) do
+    case sandbox_payload(Map.get(entry, :sandbox)) do
+      nil ->
+        nil
+
+      sandbox ->
+        %{
+          issue_id: Map.get(entry, :issue_id),
+          issue_identifier: Map.get(entry, :identifier),
+          issue_url: Map.get(entry, :issue_url),
+          issue_status: issue_status,
+          worker_host: Map.get(entry, :worker_host),
+          workspace_path: Map.get(entry, :workspace_path),
+          sandbox: sandbox
+        }
+    end
+  end
 
   defp recent_events_payload(nil), do: []
 

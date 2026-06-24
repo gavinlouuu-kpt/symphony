@@ -51,6 +51,7 @@ defmodule SymphonyElixir.CuaSandboxTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       worker_provider: "cua",
+      cua_host: "127.0.0.2",
       cua_image: "local/symphony-cua-worker:test",
       cua_wait_for_ssh: false,
       cua_port_span: 10,
@@ -67,15 +68,17 @@ defmodule SymphonyElixir.CuaSandboxTest do
     assert sandbox.name == "symphony-mt-123"
     assert sandbox.provider == "cua"
     assert sandbox.driver == "docker"
-    assert sandbox.novnc_url =~ "http://127.0.0.1:"
-    assert sandbox.api_url =~ "http://127.0.0.1:"
+    assert sandbox.host == "127.0.0.2"
+    assert sandbox.lifecycle == "preserve"
+    assert sandbox.novnc_url =~ "http://127.0.0.2:"
+    assert sandbox.api_url =~ "http://127.0.0.2:"
 
     trace = File.read!(trace_file)
     assert trace =~ "inspect --format {{.State.Running}} symphony-mt-123"
     assert trace =~ "run -d --name symphony-mt-123"
     assert trace =~ "--label symphony.issue_id=issue-123"
     assert trace =~ "--label symphony.issue_identifier=MT-123"
-    assert trace =~ "127.0.0.1:"
+    assert trace =~ "127.0.0.2:"
     assert trace =~ ":22"
     assert trace =~ ":5901"
     assert trace =~ ":6901"
@@ -142,6 +145,7 @@ defmodule SymphonyElixir.CuaSandboxTest do
              host: "127.0.0.1",
              ssh_target: "cua@127.0.0.1:22123",
              ssh_port: 22123,
+             lifecycle: "preserve",
              vnc_url: "vnc://127.0.0.1:16123",
              novnc_url: "http://127.0.0.1:17123/",
              api_url: "http://127.0.0.1:18123/"

@@ -136,6 +136,7 @@ defmodule SymphonyElixir.Config.Schema do
     embedded_schema do
       field(:driver, :string, default: "docker")
       field(:executable, :string, default: "docker")
+      field(:host, :string, default: "127.0.0.1")
       field(:image, :string, default: "symphony-cua-worker:latest")
       field(:name_prefix, :string, default: "symphony")
       field(:ssh_user, :string, default: "cua")
@@ -163,6 +164,7 @@ defmodule SymphonyElixir.Config.Schema do
         [
           :driver,
           :executable,
+          :host,
           :image,
           :name_prefix,
           :ssh_user,
@@ -183,7 +185,7 @@ defmodule SymphonyElixir.Config.Schema do
         ],
         empty_values: []
       )
-      |> validate_required([:driver, :executable, :image, :name_prefix, :ssh_user])
+      |> validate_required([:driver, :executable, :host, :image, :name_prefix, :ssh_user])
       |> validate_number(:launch_timeout_ms, greater_than: 0)
       |> validate_number(:port_span, greater_than: 0, less_than_or_equal_to: 10_000)
       |> validate_port(:ssh_port_start)

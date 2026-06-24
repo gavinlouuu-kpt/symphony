@@ -392,6 +392,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                    "host" => "127.0.0.1",
                    "ssh_target" => "cua@127.0.0.1:22123",
                    "ssh_port" => 22123,
+                   "lifecycle" => "delete_on_terminal",
                    "vnc_url" => "vnc://127.0.0.1:16123",
                    "novnc_url" => "http://127.0.0.1:17123/",
                    "api_url" => "http://127.0.0.1:18123/"
@@ -401,6 +402,30 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_event" => "turn_input_required",
                  "last_message" => "turn blocked: waiting for user input",
                  "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
+               }
+             ],
+             "sandboxes" => [
+               %{
+                 "issue_id" => "issue-blocked",
+                 "issue_identifier" => "MT-BLOCKED",
+                 "issue_url" => "https://example.org/issues/MT-BLOCKED",
+                 "issue_status" => "blocked",
+                 "worker_host" => "dm-dev2",
+                 "workspace_path" => "/workspaces/MT-BLOCKED",
+                 "sandbox" => %{
+                   "name" => "symphony-mt-blocked",
+                   "provider" => "cua",
+                   "driver" => "docker",
+                   "source" => "docker",
+                   "status" => "running",
+                   "host" => "127.0.0.1",
+                   "ssh_target" => "cua@127.0.0.1:22123",
+                   "ssh_port" => 22123,
+                   "lifecycle" => "delete_on_terminal",
+                   "vnc_url" => "vnc://127.0.0.1:16123",
+                   "novnc_url" => "http://127.0.0.1:17123/",
+                   "api_url" => "http://127.0.0.1:18123/"
+                 }
                }
              ],
              "codex_totals" => %{
@@ -611,6 +636,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Offline"
     assert html =~ "Copy ID"
     assert html =~ "Codex update"
+    assert html =~ "CUA sandboxes"
+    assert html =~ "symphony-mt-blocked"
+    assert html =~ "Open noVNC"
+    assert html =~ "closes when terminal"
+    assert html =~ "cua@127.0.0.1:22123"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -806,6 +836,7 @@ defmodule SymphonyElixir.ExtensionsTest do
             host: "127.0.0.1",
             ssh_target: "cua@127.0.0.1:22123",
             ssh_port: 22123,
+            lifecycle: "delete_on_terminal",
             vnc_url: "vnc://127.0.0.1:16123",
             novnc_url: "http://127.0.0.1:17123/",
             api_url: "http://127.0.0.1:18123/"
