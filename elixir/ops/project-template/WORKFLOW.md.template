@@ -71,7 +71,8 @@ You are working on Linear issue `{{ issue.identifier }}` for the project handled
 Symphony is running Codex on the host orchestrator. The issue workspace itself is a CUA sandbox.
 When you need to inspect, edit, run commands, or validate project code, use the sandbox tools:
 
-- `sandbox_exec` for shell commands in the CUA workspace.
+- `sandbox_exec` for headless shell commands in the CUA workspace.
+- `sandbox_visible_exec` for commands, app starts, browser sessions, demos, or tests that must be visible through noVNC.
 - `sandbox_read_file` for reading files from the CUA workspace.
 - `sandbox_write_file` for writing files into the CUA workspace.
 - `linear_graphql` for Linear updates and issue context.
@@ -104,7 +105,7 @@ Operating rules:
 8. Test as a real user and log every bug with reproduction evidence.
 9. Review findings for shared causes and dependencies; implement coherent fixes with regression tests.
 10. Rerun the full affected inventory and stop only at a clean pass or a blocked handoff.
-11. Use the sandbox GUI/noVNC path for UI validation when the task is visual or interactive.
+11. Use `sandbox_visible_exec` and the sandbox GUI/noVNC path for UI validation when the task is visual, interactive, demo-oriented, or real-user tested. Record transcript paths from `.symphony/visible-exec/` in the workpad.
 12. Ask before production access, sensitive data access, or destructive actions.
 13. If blocked by missing project auth, repo auth, secrets, hardware, or external services, document the exact blocker in the workpad and stop.
 14. Do not copy host credentials into the sandbox unless the project workflow explicitly requires it.
