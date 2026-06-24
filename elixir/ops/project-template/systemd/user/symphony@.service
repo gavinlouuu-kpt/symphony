@@ -4,6 +4,7 @@ Description=Symphony CUA project orchestrator (%i)
 [Service]
 Type=simple
 WorkingDirectory=%h/Service/symphony/%i
+Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/gavin/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=SYMPHONY_ENV_FILE=%h/Service/symphony/%i/symphony.env
 ExecStart=%h/Service/symphony/%i/bin/start.sh
 Restart=always
