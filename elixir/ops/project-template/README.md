@@ -146,6 +146,16 @@ For private repositories, provide sandbox-side Git access using one of these pat
 Do not mount host Codex auth into CUA. The one-orchestrator model keeps OpenAI/Codex auth on the
 host and uses sandbox tools to operate inside CUA.
 
+## noVNC Visibility
+
+The default sandbox shell tool is headless: `sandbox_exec` runs commands over SSH, so noVNC will not
+show terminal activity for normal code edits, builds, or tests.
+
+For demo steps, real-user validation, browser/app startup, or any task where the operator should see
+activity in noVNC, the agent should use `sandbox_visible_exec`. It opens a terminal on the CUA desktop,
+runs the command from the issue workspace, records a transcript under `.symphony/visible-exec/`, waits
+for completion, and leaves the terminal open for review.
+
 ## Dashboard
 
 The dashboard listens on `SYMPHONY_DASHBOARD_HOST:SYMPHONY_DASHBOARD_PORT`.

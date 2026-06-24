@@ -275,7 +275,13 @@ defmodule SymphonyElixir.AppServerTest do
           end
         end)
 
-      assert tool_names == ["linear_graphql", "sandbox_exec", "sandbox_read_file", "sandbox_write_file"]
+      assert tool_names == [
+               "linear_graphql",
+               "sandbox_exec",
+               "sandbox_visible_exec",
+               "sandbox_read_file",
+               "sandbox_write_file"
+             ]
     after
       File.rm_rf(test_root)
     end

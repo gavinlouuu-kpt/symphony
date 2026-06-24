@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   @linear_graphql_tool "linear_graphql"
   @sandbox_exec_tool "sandbox_exec"
+  @sandbox_visible_exec_tool "sandbox_visible_exec"
   @sandbox_read_file_tool "sandbox_read_file"
   @sandbox_write_file_tool "sandbox_write_file"
   @linear_graphql_description """
@@ -14,6 +15,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   """
   @sandbox_exec_description """
   Execute a shell command inside the issue's CUA sandbox workspace. Use this for all shell work when Symphony says the agent is controlling a sandbox from the host.
+  """
+  @sandbox_visible_exec_description """
+  Execute a shell command inside a visible terminal on the CUA desktop. Use this for real-user validation, demos, browser/app startup, and any task step that should be observable through noVNC.
   """
   @sandbox_read_file_description """
   Read a UTF-8 text file from the issue's CUA sandbox workspace.
@@ -45,6 +49,26 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "command" => %{
         "type" => "string",
         "description" => "Shell command to run from the sandbox workspace."
+      }
+    }
+  }
+  @sandbox_visible_exec_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["command"],
+    "properties" => %{
+      "command" => %{
+        "type" => "string",
+        "description" => "Shell command to run from the sandbox workspace in a visible desktop terminal."
+      },
+      "title" => %{
+        "type" => ["string", "null"],
+        "description" => "Optional terminal window title."
+      },
+      "timeout_ms" => %{
+        "type" => ["integer", "null"],
+        "minimum" => 1,
+        "description" => "Optional maximum time to wait for the command before returning. The visible terminal remains open if the command is still running."
       }
     }
   }
@@ -84,6 +108,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       @sandbox_exec_tool ->
         execute_sandbox_exec(arguments, opts)
 
+      @sandbox_visible_exec_tool ->
+        execute_sandbox_visible_exec(arguments, opts)
+
       @sandbox_read_file_tool ->
         execute_sandbox_read_file(arguments, opts)
 
@@ -117,6 +144,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
             "name" => @sandbox_exec_tool,
             "description" => @sandbox_exec_description,
             "inputSchema" => @sandbox_exec_input_schema
+          },
+          %{
+            "name" => @sandbox_visible_exec_tool,
+            "description" => @sandbox_visible_exec_description,
+            "inputSchema" => @sandbox_visible_exec_input_schema
           },
           %{
             "name" => @sandbox_read_file_tool,
@@ -153,6 +185,30 @@ defmodule SymphonyElixir.Codex.DynamicTool do
            SSH.run(
              sandbox.worker_host,
              "cd #{shell_escape(sandbox.workspace)} && #{command}",
+             stderr_to_stdout: true
+           ) do
+      dynamic_tool_response(
+        status == 0,
+        encode_payload(%{
+          "status" => status,
+          "output" => output
+        })
+      )
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp execute_sandbox_visible_exec(arguments, opts) do
+    with {:ok, sandbox} <- sandbox_context(opts),
+         {:ok, command} <- normalize_command(arguments),
+         {:ok, title} <- normalize_visible_title(arguments),
+         {:ok, timeout_ms} <- normalize_visible_timeout_ms(arguments),
+         {:ok, {output, status}} <-
+           SSH.run(
+             sandbox.worker_host,
+             visible_exec_script(sandbox.workspace, command, title, timeout_ms),
              stderr_to_stdout: true
            ) do
       dynamic_tool_response(
@@ -266,6 +322,34 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp normalize_command(_arguments), do: {:error, :invalid_arguments}
+
+  defp normalize_visible_title(arguments) when is_map(arguments) do
+    case Map.get(arguments, "title") || Map.get(arguments, :title) do
+      title when is_binary(title) ->
+        case String.trim(title) do
+          "" -> {:ok, "Symphony visible exec"}
+          trimmed -> {:ok, trimmed}
+        end
+
+      nil ->
+        {:ok, "Symphony visible exec"}
+
+      _ ->
+        {:error, :invalid_visible_title}
+    end
+  end
+
+  defp normalize_visible_title(_arguments), do: {:ok, "Symphony visible exec"}
+
+  defp normalize_visible_timeout_ms(arguments) when is_map(arguments) do
+    case Map.get(arguments, "timeout_ms") || Map.get(arguments, :timeout_ms) do
+      nil -> {:ok, 600_000}
+      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 -> {:ok, timeout_ms}
+      _ -> {:error, :invalid_visible_timeout}
+    end
+  end
+
+  defp normalize_visible_timeout_ms(_arguments), do: {:ok, 600_000}
 
   defp normalize_relative_path(arguments) when is_map(arguments) do
     case Map.get(arguments, "path") || Map.get(arguments, :path) do
@@ -395,6 +479,22 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
+  defp tool_error_payload(:invalid_visible_title) do
+    %{
+      "error" => %{
+        "message" => "`sandbox_visible_exec.title` must be a string when provided."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_visible_timeout) do
+    %{
+      "error" => %{
+        "message" => "`sandbox_visible_exec.timeout_ms` must be a positive integer when provided."
+      }
+    }
+  end
+
   defp tool_error_payload(:missing_path) do
     %{
       "error" => %{
@@ -501,6 +601,96 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       action
     ]
     |> Enum.join("\n")
+  end
+
+  defp visible_exec_script(workspace, command, title, timeout_ms) do
+    command_b64 = Base.encode64(command)
+    title_b64 = Base.encode64(title)
+    timeout_seconds = max(1, div(timeout_ms + 999, 1_000))
+
+    """
+    set -eu
+    workspace=#{shell_escape(workspace)}
+    run_dir="$workspace/.symphony/visible-exec"
+    mkdir -p -- "$run_dir"
+    run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    command="$(printf %s #{shell_escape(command_b64)} | base64 -d)"
+    title="$(printf %s #{shell_escape(title_b64)} | base64 -d)"
+    log="$run_dir/$run_id.log"
+    status_file="$run_dir/$run_id.status"
+    runner="$run_dir/$run_id.sh"
+    launcher="$run_dir/$run_id.launcher.sh"
+
+    if command -v xfce4-terminal >/dev/null 2>&1 ||
+       command -v x-terminal-emulator >/dev/null 2>&1 ||
+       command -v xterm >/dev/null 2>&1; then
+      :
+    else
+      echo "No terminal emulator found in CUA desktop image" >&2
+      exit 127
+    fi
+
+    cat > "$runner" <<'SYMPHONY_VISIBLE_RUNNER'
+    #!/usr/bin/env bash
+    set +e
+    cd "$SYMPHONY_VISIBLE_WORKSPACE" || exit 111
+    {
+      printf 'Symphony visible exec\\n'
+      printf 'workspace: %s\\n' "$SYMPHONY_VISIBLE_WORKSPACE"
+      printf 'started: %s\\n' "$(date -Iseconds)"
+      printf 'command: %s\\n\\n' "$SYMPHONY_VISIBLE_COMMAND"
+    } | tee "$SYMPHONY_VISIBLE_LOG"
+    bash -lc "$SYMPHONY_VISIBLE_COMMAND" 2>&1 | tee -a "$SYMPHONY_VISIBLE_LOG"
+    status=${PIPESTATUS[0]}
+    {
+      printf '\\nexit status: %s\\n' "$status"
+      printf 'finished: %s\\n' "$(date -Iseconds)"
+      printf '\\nWindow held for noVNC review. Close it manually when done.\\n'
+    } | tee -a "$SYMPHONY_VISIBLE_LOG"
+    printf '%s' "$status" > "$SYMPHONY_VISIBLE_STATUS_FILE"
+    tail -f /dev/null
+    SYMPHONY_VISIBLE_RUNNER
+
+    cat > "$launcher" <<'SYMPHONY_VISIBLE_LAUNCHER'
+    #!/usr/bin/env bash
+    set -eu
+    if command -v xfce4-terminal >/dev/null 2>&1; then
+      exec xfce4-terminal --title "$SYMPHONY_VISIBLE_TITLE" --command "bash '$SYMPHONY_VISIBLE_RUNNER'"
+    elif command -v x-terminal-emulator >/dev/null 2>&1; then
+      exec x-terminal-emulator -T "$SYMPHONY_VISIBLE_TITLE" -e bash "$SYMPHONY_VISIBLE_RUNNER"
+    elif command -v xterm >/dev/null 2>&1; then
+      exec xterm -T "$SYMPHONY_VISIBLE_TITLE" -e bash "$SYMPHONY_VISIBLE_RUNNER"
+    else
+      echo "No terminal emulator found in CUA desktop image" >&2
+      exit 127
+    fi
+    SYMPHONY_VISIBLE_LAUNCHER
+
+    chmod +x "$runner" "$launcher"
+    env DISPLAY="${DISPLAY:-:1}" \
+      SYMPHONY_VISIBLE_WORKSPACE="$workspace" \
+      SYMPHONY_VISIBLE_COMMAND="$command" \
+      SYMPHONY_VISIBLE_TITLE="$title" \
+      SYMPHONY_VISIBLE_LOG="$log" \
+      SYMPHONY_VISIBLE_STATUS_FILE="$status_file" \
+      SYMPHONY_VISIBLE_RUNNER="$runner" \
+      "$launcher" >/dev/null 2>&1 &
+
+    deadline=$((SECONDS + #{timeout_seconds}))
+    while [ ! -f "$status_file" ]; do
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        printf 'run_id=%s\\nlog=%s\\nstatus=running\\ntimed_out=true\\n' "$run_id" "$log"
+        [ -f "$log" ] && tail -n 200 "$log"
+        exit 124
+      fi
+      sleep 1
+    done
+
+    status="$(cat "$status_file")"
+    printf 'run_id=%s\\nlog=%s\\nstatus=%s\\n\\n' "$run_id" "$log" "$status"
+    tail -n 200 "$log"
+    exit "$status"
+    """
   end
 
   defp shell_escape(value) when is_binary(value) do

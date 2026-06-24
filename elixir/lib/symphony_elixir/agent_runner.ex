@@ -292,7 +292,8 @@ defmodule SymphonyElixir.AgentRunner do
 
     Your local working directory is only a host-side control workspace. Do not use local shell commands or local file edits for issue work.
     When task instructions refer to the current working directory or workspace root, interpret that as the CUA sandbox workspace above.
-    Use `sandbox_exec` for shell commands in the CUA workspace, `sandbox_read_file` to inspect sandbox files, and `sandbox_write_file` to write sandbox files.
+    Use `sandbox_exec` for headless shell commands in the CUA workspace, `sandbox_visible_exec` for commands that must be visible through noVNC, `sandbox_read_file` to inspect sandbox files, and `sandbox_write_file` to write sandbox files.
+    When the issue asks for real-user testing, noVNC/demo evidence, browser/app validation, or visible desktop activity, you must use `sandbox_visible_exec` for the relevant app/test commands and document the transcript path under `.symphony/visible-exec`.
     Use `linear_graphql` for Linear API work.
 
     """
