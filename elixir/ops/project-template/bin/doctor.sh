@@ -34,6 +34,9 @@ SYMPHONY_INSTANCE_ROOT=${SYMPHONY_INSTANCE_ROOT:-"$INSTANCE_ROOT"}
 SYMPHONY_DASHBOARD_PORT=${SYMPHONY_DASHBOARD_PORT:-4401}
 SYMPHONY_CUA_IMAGE=${SYMPHONY_CUA_IMAGE:-symphony-cua-worker:latest}
 SYMPHONY_CUA_IMAGE_BUILD=${SYMPHONY_CUA_IMAGE_BUILD:-auto}
+SYMPHONY_CUA_SSH_KEYGEN=${SYMPHONY_CUA_SSH_KEYGEN:-auto}
+SYMPHONY_CUA_SSH_IDENTITY_FILE=${SYMPHONY_CUA_SSH_IDENTITY_FILE:-"$SYMPHONY_INSTANCE_ROOT/ssh/id_ed25519"}
+SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH=${SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH:-"$SYMPHONY_CUA_SSH_IDENTITY_FILE.pub"}
 
 [[ -n "${LINEAR_API_KEY:-}" ]] && check_ok "LINEAR_API_KEY is set" || check_fail "LINEAR_API_KEY is missing"
 [[ -n "${SYMPHONY_LINEAR_PROJECT_SLUG:-}" ]] && check_ok "SYMPHONY_LINEAR_PROJECT_SLUG is set" || check_fail "SYMPHONY_LINEAR_PROJECT_SLUG is missing"
@@ -41,6 +44,25 @@ SYMPHONY_CUA_IMAGE_BUILD=${SYMPHONY_CUA_IMAGE_BUILD:-auto}
 
 [[ -d "$SYMPHONY_CODE_DIR/elixir" ]] && check_ok "Symphony checkout found" || check_fail "Symphony checkout missing at $SYMPHONY_CODE_DIR"
 [[ -f "$SYMPHONY_INSTANCE_ROOT/WORKFLOW.md.template" ]] && check_ok "workflow template found" || check_fail "workflow template missing"
+
+case "$SYMPHONY_CUA_SSH_KEYGEN" in
+  auto)
+    if [[ -s "$SYMPHONY_CUA_SSH_IDENTITY_FILE" && -s "$SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH" ]]; then
+      check_ok "CUA SSH keypair exists"
+    elif command -v ssh-keygen >/dev/null 2>&1; then
+      check_warn "CUA SSH keypair missing; bin/start.sh will generate it"
+    else
+      check_fail "CUA SSH keypair missing and ssh-keygen is unavailable"
+    fi
+    ;;
+  never)
+    [[ -s "$SYMPHONY_CUA_SSH_IDENTITY_FILE" ]] && check_ok "CUA SSH identity file exists" || check_fail "CUA SSH identity file missing: $SYMPHONY_CUA_SSH_IDENTITY_FILE"
+    [[ -s "$SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH" ]] && check_ok "CUA SSH authorized key exists" || check_fail "CUA SSH authorized key missing: $SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH"
+    ;;
+  *)
+    check_fail "invalid SYMPHONY_CUA_SSH_KEYGEN=$SYMPHONY_CUA_SSH_KEYGEN"
+    ;;
+esac
 
 if command -v docker >/dev/null 2>&1; then
   check_ok "docker CLI found"
@@ -105,4 +127,3 @@ if [[ "$FAILED" == "0" ]]; then
 else
   exit 1
 fi
-

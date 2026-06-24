@@ -29,6 +29,8 @@ worker:
     - UserKnownHostsFile=/dev/null
     - ConnectTimeout=5
     - LogLevel=ERROR
+    - IdentityFile=@SYMPHONY_CUA_SSH_IDENTITY_FILE@
+    - IdentitiesOnly=yes
 cua:
   driver: docker
   host: "@SYMPHONY_CUA_HOST@"

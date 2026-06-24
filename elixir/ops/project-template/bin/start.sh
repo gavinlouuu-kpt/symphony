@@ -33,7 +33,9 @@ SYMPHONY_CUA_HOST=${SYMPHONY_CUA_HOST:-127.0.0.1}
 SYMPHONY_CUA_IMAGE=${SYMPHONY_CUA_IMAGE:-symphony-cua-worker:latest}
 SYMPHONY_CUA_IMAGE_BUILD=${SYMPHONY_CUA_IMAGE_BUILD:-auto}
 SYMPHONY_CUA_NAME_PREFIX=${SYMPHONY_CUA_NAME_PREFIX:-"symphony-$SYMPHONY_INSTANCE_ID"}
-SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH=${SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH:-~/.ssh/id_ed25519.pub}
+SYMPHONY_CUA_SSH_KEYGEN=${SYMPHONY_CUA_SSH_KEYGEN:-auto}
+SYMPHONY_CUA_SSH_IDENTITY_FILE=${SYMPHONY_CUA_SSH_IDENTITY_FILE:-"$SYMPHONY_INSTANCE_ROOT/ssh/id_ed25519"}
+SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH=${SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH:-"$SYMPHONY_CUA_SSH_IDENTITY_FILE.pub"}
 SYMPHONY_CUA_DELETE_ON_TERMINAL=${SYMPHONY_CUA_DELETE_ON_TERMINAL:-false}
 SYMPHONY_CUA_LAUNCH_TIMEOUT_MS=${SYMPHONY_CUA_LAUNCH_TIMEOUT_MS:-120000}
 SYMPHONY_CODEX_COMMAND=${SYMPHONY_CODEX_COMMAND:-'codex --config shell_environment_policy.inherit=all --config model=\"gpt-5.5\" --config model_reasoning_effort=xhigh app-server'}
@@ -74,6 +76,7 @@ render_workflow() {
   replace_token SYMPHONY_CUA_HOST "$SYMPHONY_CUA_HOST"
   replace_token SYMPHONY_CUA_IMAGE "$SYMPHONY_CUA_IMAGE"
   replace_token SYMPHONY_CUA_NAME_PREFIX "$SYMPHONY_CUA_NAME_PREFIX"
+  replace_token SYMPHONY_CUA_SSH_IDENTITY_FILE "$SYMPHONY_CUA_SSH_IDENTITY_FILE"
   replace_token SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH "$SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH"
   replace_token SYMPHONY_CUA_DELETE_ON_TERMINAL "$SYMPHONY_CUA_DELETE_ON_TERMINAL"
   replace_token SYMPHONY_CUA_LAUNCH_TIMEOUT_MS "$SYMPHONY_CUA_LAUNCH_TIMEOUT_MS"
@@ -85,6 +88,34 @@ render_workflow() {
   replace_token SYMPHONY_CODEX_COMMAND "$SYMPHONY_CODEX_COMMAND"
   replace_token SYMPHONY_DASHBOARD_HOST "$SYMPHONY_DASHBOARD_HOST"
   replace_token SYMPHONY_DASHBOARD_PORT "$SYMPHONY_DASHBOARD_PORT"
+}
+
+ensure_cua_ssh_key_if_needed() {
+  case "$SYMPHONY_CUA_SSH_KEYGEN" in
+    never)
+      return 0
+      ;;
+    auto)
+      if [[ -s "$SYMPHONY_CUA_SSH_IDENTITY_FILE" && -s "$SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH" ]]; then
+        return 0
+      fi
+
+      if ! command -v ssh-keygen >/dev/null 2>&1; then
+        echo "ssh-keygen is required to create the CUA SSH keypair" >&2
+        exit 1
+      fi
+
+      mkdir -p "$(dirname "$SYMPHONY_CUA_SSH_IDENTITY_FILE")"
+      chmod 700 "$(dirname "$SYMPHONY_CUA_SSH_IDENTITY_FILE")"
+      ssh-keygen -t ed25519 -N "" -f "$SYMPHONY_CUA_SSH_IDENTITY_FILE" -C "symphony-$SYMPHONY_INSTANCE_ID-cua" >/dev/null
+      chmod 600 "$SYMPHONY_CUA_SSH_IDENTITY_FILE"
+      chmod 644 "$SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH"
+      ;;
+    *)
+      echo "Invalid SYMPHONY_CUA_SSH_KEYGEN=$SYMPHONY_CUA_SSH_KEYGEN. Use auto or never." >&2
+      exit 1
+      ;;
+  esac
 }
 
 build_cua_image_if_needed() {
@@ -116,7 +147,9 @@ if [[ ! -d "$SYMPHONY_CODE_DIR/elixir" ]]; then
   exit 1
 fi
 
-mkdir -p "$SYMPHONY_INSTANCE_ROOT" "$SYMPHONY_RUNTIME_ROOT" "$SYMPHONY_LOGS_ROOT" "$SYMPHONY_WORKSPACE_ROOT"
+ensure_cua_ssh_key_if_needed
+
+mkdir -p "$SYMPHONY_INSTANCE_ROOT" "$SYMPHONY_RUNTIME_ROOT" "$SYMPHONY_LOGS_ROOT"
 render_workflow
 
 if [[ "${SYMPHONY_RENDER_ONLY:-0}" == "1" ]]; then

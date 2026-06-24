@@ -39,6 +39,7 @@ SYMPHONY_LINEAR_PROJECT_SLUG=...
 SYMPHONY_SOURCE_REPO_URL=...
 SYMPHONY_INSTANCE_ID=biowork
 SYMPHONY_INSTANCE_ROOT=/home/gavin/Service/symphony/biowork
+SYMPHONY_WORKSPACE_ROOT=/home/cua/workspaces
 SYMPHONY_DASHBOARD_PORT=4401
 SYMPHONY_CUA_HOST=127.0.0.1
 SYMPHONY_CUA_NAME_PREFIX=symphony-biowork
@@ -49,9 +50,11 @@ Each project instance should have a unique:
 - `SYMPHONY_INSTANCE_ID`
 - `SYMPHONY_INSTANCE_ROOT`
 - `SYMPHONY_DASHBOARD_PORT`
-- `SYMPHONY_WORKSPACE_ROOT`
 - `SYMPHONY_CUA_HOST` when noVNC/API links must be reachable from another machine
 - `SYMPHONY_CUA_NAME_PREFIX`
+
+Keep `SYMPHONY_WORKSPACE_ROOT` as a path writable inside the CUA container. The default
+`/home/cua/workspaces` is correct for the reference image.
 
 Run checks:
 
@@ -155,6 +158,16 @@ ports local-only.
 The template defaults `SYMPHONY_CUA_DELETE_ON_TERMINAL=true`, so CUA containers are preserved during
 running, retrying, blocked, and non-terminal review states, then closed when the Linear issue reaches
 a configured terminal state.
+
+Each instance uses a project-local SSH keypair by default:
+
+```text
+ssh/id_ed25519
+ssh/id_ed25519.pub
+```
+
+`bin/start.sh` creates it automatically when `SYMPHONY_CUA_SSH_KEYGEN=auto`. The public key is mounted
+into CUA as the authorized key, and the private key is used by Symphony for SSH commands into the sandbox.
 
 Use a distinct port per project instance, for example:
 
