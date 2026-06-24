@@ -1,0 +1,14 @@
+[Unit]
+Description=Symphony CUA project orchestrator (%i)
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Service/symphony/%i
+Environment=SYMPHONY_ENV_FILE=%h/Service/symphony/%i/symphony.env
+ExecStart=%h/Service/symphony/%i/bin/start.sh
+Restart=always
+RestartSec=10
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target

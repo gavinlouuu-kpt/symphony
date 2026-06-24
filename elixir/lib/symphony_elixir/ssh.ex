@@ -1,6 +1,15 @@
 defmodule SymphonyElixir.SSH do
   @moduledoc false
 
+  alias SymphonyElixir.Config
+
+  @default_cua_ssh_options [
+    "BatchMode=yes",
+    "StrictHostKeyChecking=no",
+    "UserKnownHostsFile=/dev/null",
+    "ConnectTimeout=5"
+  ]
+
   @spec run(String.t(), String.t(), keyword()) :: {:ok, {String.t(), non_neg_integer()}} | {:error, term()}
   def run(host, command, opts \\ []) when is_binary(host) and is_binary(command) do
     with {:ok, executable} <- ssh_executable() do
@@ -43,6 +52,7 @@ defmodule SymphonyElixir.SSH do
 
     []
     |> maybe_put_config()
+    |> put_configured_options()
     |> Kernel.++(["-T"])
     |> maybe_put_port(port)
     |> Kernel.++([destination, remote_shell_command(command)])
@@ -63,6 +73,26 @@ defmodule SymphonyElixir.SSH do
 
   defp maybe_put_port(args, nil), do: args
   defp maybe_put_port(args, port), do: args ++ ["-p", port]
+
+  defp put_configured_options(args) do
+    args ++ Enum.flat_map(configured_options(), &["-o", &1])
+  end
+
+  defp configured_options do
+    case Config.settings() do
+      {:ok, settings} ->
+        options = Enum.filter(settings.worker.ssh_options || [], &is_binary/1)
+
+        cond do
+          options != [] -> options
+          settings.worker.provider == "cua" -> @default_cua_ssh_options
+          true -> []
+        end
+
+      _ ->
+        []
+    end
+  end
 
   defp parse_target(target) when is_binary(target) do
     trimmed_target = String.trim(target)

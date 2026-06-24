@@ -351,6 +351,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "state" => "In Progress",
                  "worker_host" => nil,
                  "workspace_path" => nil,
+                 "sandbox" => nil,
                  "session_id" => "thread-http",
                  "turn_count" => 7,
                  "last_event" => "notification",
@@ -369,7 +370,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
                  "worker_host" => nil,
-                 "workspace_path" => nil
+                 "workspace_path" => nil,
+                 "sandbox" => nil
                }
              ],
              "blocked" => [
@@ -381,6 +383,19 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "error" => "codex turn requires operator input",
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
+                 "sandbox" => %{
+                   "name" => "symphony-mt-blocked",
+                   "provider" => "cua",
+                   "driver" => "docker",
+                   "source" => "docker",
+                   "status" => "running",
+                   "host" => "127.0.0.1",
+                   "ssh_target" => "cua@127.0.0.1:22123",
+                   "ssh_port" => 22123,
+                   "vnc_url" => "vnc://127.0.0.1:16123",
+                   "novnc_url" => "http://127.0.0.1:17123/",
+                   "api_url" => "http://127.0.0.1:18123/"
+                 },
                  "session_id" => "thread-blocked",
                  "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
                  "last_event" => "turn_input_required",
@@ -408,10 +423,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
                "host" => nil
              },
+             "sandbox" => nil,
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
                "worker_host" => nil,
                "workspace_path" => nil,
+               "sandbox" => nil,
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
@@ -779,7 +796,20 @@ defmodule SymphonyElixir.ExtensionsTest do
             message: %{"method" => "turn/input_required"},
             timestamp: DateTime.utc_now()
           },
-          last_codex_timestamp: DateTime.utc_now()
+          last_codex_timestamp: DateTime.utc_now(),
+          sandbox: %{
+            name: "symphony-mt-blocked",
+            provider: "cua",
+            driver: "docker",
+            source: "docker",
+            status: "running",
+            host: "127.0.0.1",
+            ssh_target: "cua@127.0.0.1:22123",
+            ssh_port: 22123,
+            vnc_url: "vnc://127.0.0.1:16123",
+            novnc_url: "http://127.0.0.1:17123/",
+            api_url: "http://127.0.0.1:18123/"
+          }
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},

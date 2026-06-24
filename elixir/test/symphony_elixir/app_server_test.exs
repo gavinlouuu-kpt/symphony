@@ -183,6 +183,104 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server advertises sandbox dynamic tools when sandbox context is supplied" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-sandbox-tools-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SANDBOX")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-sandbox-tools.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+      on_exit(fn ->
+        restore_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+      end)
+
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-sandbox-tools.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-sandbox-tools"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-sandbox-tools"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-sandbox-tools",
+        identifier: "MT-SANDBOX",
+        title: "Validate sandbox tools",
+        description: "Ensure host agent sessions advertise sandbox tools",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SANDBOX",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "Validate sandbox tools", issue,
+                 dynamic_tool_context: %{
+                   sandbox: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"}
+                 }
+               )
+
+      trace = File.read!(trace_file)
+
+      tool_names =
+        trace
+        |> String.split("\n", trim: true)
+        |> Enum.find_value(fn line ->
+          if String.starts_with?(line, "JSON:") do
+            payload = line |> String.trim_leading("JSON:") |> Jason.decode!()
+
+            if payload["method"] == "thread/start" do
+              payload
+              |> get_in(["params", "dynamicTools"])
+              |> Enum.map(& &1["name"])
+            end
+          end
+        end)
+
+      assert tool_names == ["linear_graphql", "sandbox_exec", "sandbox_read_file", "sandbox_write_file"]
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server marks request-for-input events as a hard failure" do
     test_root =
       Path.join(

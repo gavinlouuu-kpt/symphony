@@ -1,0 +1,101 @@
+---
+tracker:
+  kind: linear
+  endpoint: https://api.linear.app/graphql
+  api_key: "$LINEAR_API_KEY"
+  project_slug: "@SYMPHONY_LINEAR_PROJECT_SLUG@"
+  required_labels: []
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+    - Merging
+    - Human Review
+  terminal_states:
+    - Closed
+    - Cancelled
+    - Canceled
+    - Duplicate
+    - Done
+polling:
+  interval_ms: @SYMPHONY_POLL_INTERVAL_MS@
+workspace:
+  root: "@SYMPHONY_WORKSPACE_ROOT@"
+worker:
+  provider: cua
+  ssh_options:
+    - BatchMode=yes
+    - StrictHostKeyChecking=no
+    - UserKnownHostsFile=/dev/null
+    - ConnectTimeout=5
+    - LogLevel=ERROR
+cua:
+  driver: docker
+  image: "@SYMPHONY_CUA_IMAGE@"
+  name_prefix: "@SYMPHONY_CUA_NAME_PREFIX@"
+  ssh_user: cua
+  ssh_authorized_key_path: "@SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH@"
+  delete_on_terminal: @SYMPHONY_CUA_DELETE_ON_TERMINAL@
+  wait_for_ssh: true
+  launch_timeout_ms: @SYMPHONY_CUA_LAUNCH_TIMEOUT_MS@
+  volumes: []
+  docker_args: []
+hooks:
+  after_create: |
+    set -eu
+    git clone --depth 1 --branch "@SYMPHONY_SOURCE_REPO_BRANCH@" "@SYMPHONY_SOURCE_REPO_URL@" .
+    if [ -n "@SYMPHONY_AFTER_CREATE_EXTRA@" ]; then
+      @SYMPHONY_AFTER_CREATE_EXTRA@
+    fi
+agent:
+  max_concurrent_agents: @SYMPHONY_MAX_CONCURRENT_AGENTS@
+  max_turns: @SYMPHONY_MAX_TURNS@
+codex:
+  command: >
+    @SYMPHONY_CODEX_COMMAND@
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy: null
+observability:
+  dashboard_enabled: true
+server:
+  host: "@SYMPHONY_DASHBOARD_HOST@"
+  port: @SYMPHONY_DASHBOARD_PORT@
+---
+
+You are working on Linear issue `{{ issue.identifier }}` for the project handled by this Symphony instance.
+
+Symphony is running Codex on the host orchestrator. The issue workspace itself is a CUA sandbox.
+When you need to inspect, edit, run commands, or validate project code, use the sandbox tools:
+
+- `sandbox_exec` for shell commands in the CUA workspace.
+- `sandbox_read_file` for reading files from the CUA workspace.
+- `sandbox_write_file` for writing files into the CUA workspace.
+- `linear_graphql` for Linear updates and issue context.
+
+Do not use host-local shell commands or host-local file edits for project work unless explicitly instructed by Symphony.
+
+Issue:
+- Identifier: {{ issue.identifier }}
+- Title: {{ issue.title }}
+- State: {{ issue.state }}
+- URL: {{ issue.url }}
+- Labels: {{ issue.labels }}
+
+Description:
+{% if issue.description %}
+{{ issue.description }}
+{% else %}
+No description provided.
+{% endif %}
+
+Operating rules:
+
+1. Work autonomously end to end inside the CUA sandbox.
+2. Keep a single Linear workpad comment current with plan, acceptance criteria, validation, and final status.
+3. Reproduce or inspect the issue before changing code when possible.
+4. Run focused validation before marking work complete.
+5. Use the sandbox GUI/noVNC path for UI validation when the task is visual or interactive.
+6. If blocked by missing project auth, repo auth, secrets, hardware, or external services, document the exact blocker in the workpad and stop.
+7. Do not copy host credentials into the sandbox unless the project workflow explicitly requires it.
+

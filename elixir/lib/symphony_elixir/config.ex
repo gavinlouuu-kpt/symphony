@@ -122,6 +122,12 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind not in ["linear", "memory"] ->
         {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
+      settings.worker.provider not in ["ssh", "cua"] ->
+        {:error, {:unsupported_worker_provider, settings.worker.provider}}
+
+      settings.worker.provider == "cua" and settings.cua.driver != "docker" ->
+        {:error, {:unsupported_cua_driver, settings.cua.driver}}
+
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
         {:error, :missing_linear_api_token}
 

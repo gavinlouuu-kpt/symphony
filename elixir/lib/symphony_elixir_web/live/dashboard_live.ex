@@ -138,6 +138,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <table class="data-table data-table-running">
                 <colgroup>
                   <col style="width: 12rem;" />
+                  <col style="width: 11rem;" />
                   <col style="width: 8rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
@@ -147,6 +148,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Sandbox</th>
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
@@ -161,6 +163,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
+                    </td>
+                    <td>
+                      <.sandbox_links sandbox={entry.sandbox} />
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state)}>
@@ -228,6 +233,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Sandbox</th>
                     <th>State</th>
                     <th>Session</th>
                     <th>Blocked at</th>
@@ -242,6 +248,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
+                    </td>
+                    <td>
+                      <.sandbox_links sandbox={entry.sandbox} />
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state || "Blocked")}>
@@ -302,6 +311,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Sandbox</th>
                     <th>Attempt</th>
                     <th>Due at</th>
                     <th>Error</th>
@@ -314,6 +324,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
+                    </td>
+                    <td>
+                      <.sandbox_links sandbox={entry.sandbox} />
                     </td>
                     <td><%= entry.attempt %></td>
                     <td class="mono"><%= entry.due_at || "n/a" %></td>
@@ -360,6 +373,38 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <span class="issue-id"><%= @identifier %></span>
     <% end %>
     """
+  end
+
+  attr(:sandbox, :map, default: nil)
+
+  defp sandbox_links(assigns) do
+    assigns =
+      assigns
+      |> assign(:name, sandbox_value(assigns.sandbox, :name) || "n/a")
+      |> assign(:status, sandbox_value(assigns.sandbox, :status) || sandbox_value(assigns.sandbox, :source))
+      |> assign(:novnc_href, external_issue_url(sandbox_value(assigns.sandbox, :novnc_url)))
+      |> assign(:api_href, external_issue_url(sandbox_value(assigns.sandbox, :api_url)))
+
+    ~H"""
+    <%= if @sandbox do %>
+      <div class="detail-stack">
+        <span class="mono"><%= @name %></span>
+        <span :if={@status} class="muted"><%= @status %></span>
+        <span>
+          <a :if={@novnc_href} class="issue-link" href={@novnc_href} target="_blank" rel="noopener noreferrer">noVNC</a>
+          <a :if={@api_href} class="issue-link" href={@api_href} target="_blank" rel="noopener noreferrer">API</a>
+        </span>
+      </div>
+    <% else %>
+      <span class="muted">n/a</span>
+    <% end %>
+    """
+  end
+
+  defp sandbox_value(nil, _key), do: nil
+
+  defp sandbox_value(sandbox, key) when is_map(sandbox) do
+    Map.get(sandbox, key) || Map.get(sandbox, to_string(key))
   end
 
   defp external_issue_url(url) when is_binary(url) do

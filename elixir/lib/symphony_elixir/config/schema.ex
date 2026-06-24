@@ -113,15 +113,87 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
+      field(:provider, :string, default: "ssh")
       field(:ssh_hosts, {:array, :string}, default: [])
+      field(:ssh_options, {:array, :string}, default: [])
       field(:max_concurrent_agents_per_host, :integer)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:ssh_hosts, :max_concurrent_agents_per_host], empty_values: [])
+      |> cast(attrs, [:provider, :ssh_hosts, :ssh_options, :max_concurrent_agents_per_host], empty_values: [])
       |> validate_number(:max_concurrent_agents_per_host, greater_than: 0)
+    end
+  end
+
+  defmodule Cua do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:driver, :string, default: "docker")
+      field(:executable, :string, default: "docker")
+      field(:image, :string, default: "symphony-cua-worker:latest")
+      field(:name_prefix, :string, default: "symphony")
+      field(:ssh_user, :string, default: "cua")
+      field(:ssh_authorized_key_path, :string, default: "~/.ssh/id_ed25519.pub")
+      field(:codex_auth_path, :string)
+      field(:codex_config_path, :string)
+      field(:delete_on_terminal, :boolean, default: false)
+      field(:wait_for_ssh, :boolean, default: true)
+      field(:launch_timeout_ms, :integer, default: 120_000)
+      field(:port_span, :integer, default: 1_000)
+      field(:ssh_port_start, :integer, default: 22_000)
+      field(:vnc_port_start, :integer, default: 15_900)
+      field(:novnc_port_start, :integer, default: 16_900)
+      field(:api_port_start, :integer, default: 18_000)
+      field(:env, :map, default: %{})
+      field(:volumes, {:array, :string}, default: [])
+      field(:docker_args, {:array, :string}, default: [])
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :driver,
+          :executable,
+          :image,
+          :name_prefix,
+          :ssh_user,
+          :ssh_authorized_key_path,
+          :codex_auth_path,
+          :codex_config_path,
+          :delete_on_terminal,
+          :wait_for_ssh,
+          :launch_timeout_ms,
+          :port_span,
+          :ssh_port_start,
+          :vnc_port_start,
+          :novnc_port_start,
+          :api_port_start,
+          :env,
+          :volumes,
+          :docker_args
+        ],
+        empty_values: []
+      )
+      |> validate_required([:driver, :executable, :image, :name_prefix, :ssh_user])
+      |> validate_number(:launch_timeout_ms, greater_than: 0)
+      |> validate_number(:port_span, greater_than: 0, less_than_or_equal_to: 10_000)
+      |> validate_port(:ssh_port_start)
+      |> validate_port(:vnc_port_start)
+      |> validate_port(:novnc_port_start)
+      |> validate_port(:api_port_start)
+    end
+
+    defp validate_port(changeset, field) do
+      validate_number(changeset, field, greater_than: 0, less_than_or_equal_to: 65_535)
     end
   end
 
@@ -272,6 +344,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:cua, Cua, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
@@ -364,6 +437,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
+    |> cast_embed(:cua, with: &Cua.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
@@ -383,13 +457,21 @@ defmodule SymphonyElixir.Config.Schema do
       | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
     }
 
+    cua = %{
+      settings.cua
+      | env: normalize_keys(settings.cua.env),
+        ssh_authorized_key_path: resolve_optional_path_value(settings.cua.ssh_authorized_key_path),
+        codex_auth_path: resolve_optional_path_value(settings.cua.codex_auth_path),
+        codex_config_path: resolve_optional_path_value(settings.cua.codex_config_path)
+    }
+
     codex = %{
       settings.codex
       | approval_policy: normalize_keys(settings.codex.approval_policy),
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    %{settings | tracker: tracker, workspace: workspace, cua: cua, codex: codex}
   end
 
   defp normalize_keys(value) when is_map(value) do
@@ -440,6 +522,18 @@ defmodule SymphonyElixir.Config.Schema do
         path
     end
   end
+
+  defp resolve_optional_path_value(nil), do: nil
+  defp resolve_optional_path_value(""), do: nil
+
+  defp resolve_optional_path_value(value) when is_binary(value) do
+    case resolve_path_value(value, nil) do
+      path when is_binary(path) -> Path.expand(path)
+      other -> other
+    end
+  end
+
+  defp resolve_optional_path_value(_value), do: nil
 
   defp resolve_env_value(value, fallback) when is_binary(value) do
     case env_reference_name(value) do

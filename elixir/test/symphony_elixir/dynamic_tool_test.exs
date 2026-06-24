@@ -22,6 +22,18 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert description =~ "Linear"
   end
 
+  test "tool_specs advertises sandbox tools when a sandbox context is present" do
+    specs =
+      DynamicTool.tool_specs(sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"})
+
+    assert Enum.map(specs, & &1["name"]) == [
+             "linear_graphql",
+             "sandbox_exec",
+             "sandbox_read_file",
+             "sandbox_write_file"
+           ]
+  end
+
   test "unsupported tools return a failure payload with the supported tool list" do
     response = DynamicTool.execute("not_a_real_tool", %{})
 
@@ -40,6 +52,60 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "text" => response["output"]
              }
            ]
+  end
+
+  test "unsupported tools include sandbox tool names when sandbox context is present" do
+    response =
+      DynamicTool.execute("not_a_real_tool", %{}, sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"})
+
+    assert response["success"] == false
+
+    assert get_in(Jason.decode!(response["output"]), ["error", "supportedTools"]) == [
+             "linear_graphql",
+             "sandbox_exec",
+             "sandbox_read_file",
+             "sandbox_write_file"
+           ]
+  end
+
+  test "sandbox_exec runs a command through ssh in the sandbox workspace" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dynamic-tool-sandbox-#{System.unique_integer([:positive])}"
+      )
+
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+
+    File.write!(Path.join(test_root, "ssh"), """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+    printf 'sandbox output\\n'
+    exit 0
+    """)
+
+    File.chmod!(Path.join(test_root, "ssh"), 0o755)
+    System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+    response =
+      DynamicTool.execute("sandbox_exec", %{"command" => "printf ok"}, sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"})
+
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"status" => 0, "output" => "sandbox output\n"}
+
+    trace = File.read!(trace_file)
+    assert trace =~ "cua@127.0.0.1"
+    assert trace =~ "-p 2222"
+    assert trace =~ "/home/cua/workspace"
+    assert trace =~ "printf ok"
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do

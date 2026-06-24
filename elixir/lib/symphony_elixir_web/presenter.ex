@@ -72,6 +72,7 @@ defmodule SymphonyElixirWeb.Presenter do
         path: workspace_path(issue_identifier, running, retry, blocked),
         host: workspace_host(running, retry, blocked)
       },
+      sandbox: sandbox_from_entries(running, retry, blocked),
       attempts: %{
         restart_count: restart_count(retry),
         current_retry_attempt: retry_attempt(retry)
@@ -107,6 +108,7 @@ defmodule SymphonyElixirWeb.Presenter do
       state: entry.state,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
+      sandbox: sandbox_payload(Map.get(entry, :sandbox)),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
@@ -130,7 +132,8 @@ defmodule SymphonyElixirWeb.Presenter do
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: Map.get(entry, :workspace_path)
+      workspace_path: Map.get(entry, :workspace_path),
+      sandbox: sandbox_payload(Map.get(entry, :sandbox))
     }
   end
 
@@ -143,6 +146,7 @@ defmodule SymphonyElixirWeb.Presenter do
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
+      sandbox: sandbox_payload(Map.get(entry, :sandbox)),
       session_id: entry.session_id,
       blocked_at: iso8601(entry.blocked_at),
       last_event: entry.last_codex_event,
@@ -155,6 +159,7 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
+      sandbox: sandbox_payload(Map.get(running, :sandbox)),
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
@@ -176,7 +181,8 @@ defmodule SymphonyElixirWeb.Presenter do
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
       worker_host: Map.get(retry, :worker_host),
-      workspace_path: Map.get(retry, :workspace_path)
+      workspace_path: Map.get(retry, :workspace_path),
+      sandbox: sandbox_payload(Map.get(retry, :sandbox))
     }
   end
 
@@ -184,6 +190,7 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       worker_host: Map.get(blocked, :worker_host),
       workspace_path: Map.get(blocked, :workspace_path),
+      sandbox: sandbox_payload(Map.get(blocked, :sandbox)),
       session_id: blocked.session_id,
       state: blocked.state,
       error: blocked.error,
@@ -206,6 +213,34 @@ defmodule SymphonyElixirWeb.Presenter do
       (retry && Map.get(retry, :worker_host)) ||
       (blocked && Map.get(blocked, :worker_host))
   end
+
+  defp sandbox_from_entries(running, retry, blocked) do
+    (running && sandbox_payload(Map.get(running, :sandbox))) ||
+      (retry && sandbox_payload(Map.get(retry, :sandbox))) ||
+      (blocked && sandbox_payload(Map.get(blocked, :sandbox)))
+  end
+
+  defp sandbox_payload(nil), do: nil
+
+  defp sandbox_payload(sandbox) when is_map(sandbox) do
+    %{
+      name: Map.get(sandbox, :name) || Map.get(sandbox, "name"),
+      provider: Map.get(sandbox, :provider) || Map.get(sandbox, "provider"),
+      driver: Map.get(sandbox, :driver) || Map.get(sandbox, "driver"),
+      source: Map.get(sandbox, :source) || Map.get(sandbox, "source"),
+      status: Map.get(sandbox, :status) || Map.get(sandbox, "status"),
+      host: Map.get(sandbox, :host) || Map.get(sandbox, "host"),
+      ssh_target: Map.get(sandbox, :ssh_target) || Map.get(sandbox, "ssh_target"),
+      ssh_port: Map.get(sandbox, :ssh_port) || Map.get(sandbox, "ssh_port"),
+      vnc_url: Map.get(sandbox, :vnc_url) || Map.get(sandbox, "vnc_url"),
+      novnc_url: Map.get(sandbox, :novnc_url) || Map.get(sandbox, "novnc_url"),
+      api_url: Map.get(sandbox, :api_url) || Map.get(sandbox, "api_url")
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp sandbox_payload(_sandbox), do: nil
 
   defp recent_events_payload(nil), do: []
 
