@@ -155,6 +155,12 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert trace =~ "DISPLAY="
     assert trace =~ "xfce4-terminal"
     assert trace =~ "x-terminal-emulator"
+    assert trace =~ "env_file=\"$run_dir/$run_id.env\""
+    assert trace =~ "SYMPHONY_VISIBLE_COMMAND=%q"
+    assert trace =~ ". \"$env_file\""
+    assert trace =~ "bash %q %q"
+    assert trace =~ "\"$launcher\" \"$title\" \"$runner\" \"$env_file\""
+    refute trace =~ "SYMPHONY_VISIBLE_RUNNER=\"$runner\""
     assert trace =~ Base.encode64("printf visible")
     assert trace =~ Base.encode64("Visible Check")
     assert trace =~ "deadline=$((SECONDS + 13))"

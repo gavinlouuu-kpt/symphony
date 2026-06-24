@@ -618,6 +618,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     title="$(printf %s #{shell_escape(title_b64)} | base64 -d)"
     log="$run_dir/$run_id.log"
     status_file="$run_dir/$run_id.status"
+    env_file="$run_dir/$run_id.env"
     runner="$run_dir/$run_id.sh"
     launcher="$run_dir/$run_id.launcher.sh"
 
@@ -630,9 +631,20 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       exit 127
     fi
 
+    {
+      printf 'SYMPHONY_VISIBLE_WORKSPACE=%q\\n' "$workspace"
+      printf 'SYMPHONY_VISIBLE_COMMAND=%q\\n' "$command"
+      printf 'SYMPHONY_VISIBLE_LOG=%q\\n' "$log"
+      printf 'SYMPHONY_VISIBLE_STATUS_FILE=%q\\n' "$status_file"
+    } > "$env_file"
+
     cat > "$runner" <<'SYMPHONY_VISIBLE_RUNNER'
     #!/usr/bin/env bash
     set +e
+    env_file="${1:?missing visible exec env file}"
+    # Source a per-run env file instead of inherited terminal environment. Xfce
+    # can reuse an existing terminal server with stale environment variables.
+    . "$env_file"
     cd "$SYMPHONY_VISIBLE_WORKSPACE" || exit 111
     {
       printf 'Symphony visible exec\\n'
@@ -654,27 +666,26 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     cat > "$launcher" <<'SYMPHONY_VISIBLE_LAUNCHER'
     #!/usr/bin/env bash
     set -eu
+    title="${1:?missing visible exec title}"
+    runner="${2:?missing visible exec runner}"
+    env_file="${3:?missing visible exec env file}"
     if command -v xfce4-terminal >/dev/null 2>&1; then
-      exec xfce4-terminal --title "$SYMPHONY_VISIBLE_TITLE" --command "bash '$SYMPHONY_VISIBLE_RUNNER'"
+      printf -v terminal_command 'bash %q %q' "$runner" "$env_file"
+      exec xfce4-terminal --title "$title" --command "$terminal_command"
     elif command -v x-terminal-emulator >/dev/null 2>&1; then
-      exec x-terminal-emulator -T "$SYMPHONY_VISIBLE_TITLE" -e bash "$SYMPHONY_VISIBLE_RUNNER"
+      exec x-terminal-emulator -T "$title" -e bash "$runner" "$env_file"
     elif command -v xterm >/dev/null 2>&1; then
-      exec xterm -T "$SYMPHONY_VISIBLE_TITLE" -e bash "$SYMPHONY_VISIBLE_RUNNER"
+      exec xterm -T "$title" -e bash "$runner" "$env_file"
     else
       echo "No terminal emulator found in CUA desktop image" >&2
       exit 127
     fi
     SYMPHONY_VISIBLE_LAUNCHER
 
+    chmod 600 "$env_file"
     chmod +x "$runner" "$launcher"
     env DISPLAY="${DISPLAY:-:1}" \
-      SYMPHONY_VISIBLE_WORKSPACE="$workspace" \
-      SYMPHONY_VISIBLE_COMMAND="$command" \
-      SYMPHONY_VISIBLE_TITLE="$title" \
-      SYMPHONY_VISIBLE_LOG="$log" \
-      SYMPHONY_VISIBLE_STATUS_FILE="$status_file" \
-      SYMPHONY_VISIBLE_RUNNER="$runner" \
-      "$launcher" >/dev/null 2>&1 &
+      "$launcher" "$title" "$runner" "$env_file" >/dev/null 2>&1 &
 
     deadline=$((SECONDS + #{timeout_seconds}))
     while [ ! -f "$status_file" ]; do
