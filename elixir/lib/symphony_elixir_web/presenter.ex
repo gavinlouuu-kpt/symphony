@@ -4,6 +4,7 @@ defmodule SymphonyElixirWeb.Presenter do
   """
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.Cua.Sandbox, as: CuaSandbox
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -249,6 +250,7 @@ defmodule SymphonyElixirWeb.Presenter do
     |> Kernel.++(Enum.map(snapshot.running, &sandbox_inventory_entry(&1, "running")))
     |> Kernel.++(Enum.map(snapshot.retrying, &sandbox_inventory_entry(&1, "retrying")))
     |> Kernel.++(Enum.map(Map.get(snapshot, :blocked, []), &sandbox_inventory_entry(&1, "blocked")))
+    |> Kernel.++(Enum.map(CuaSandbox.list_live(), &retained_sandbox_inventory_entry/1))
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq_by(fn entry ->
       entry.sandbox[:name] || entry.sandbox["name"] || {entry.issue_id, entry.issue_status}
@@ -266,6 +268,24 @@ defmodule SymphonyElixirWeb.Presenter do
           issue_identifier: Map.get(entry, :identifier),
           issue_url: Map.get(entry, :issue_url),
           issue_status: issue_status,
+          worker_host: Map.get(entry, :worker_host),
+          workspace_path: Map.get(entry, :workspace_path),
+          sandbox: sandbox
+        }
+    end
+  end
+
+  defp retained_sandbox_inventory_entry(entry) when is_map(entry) do
+    case sandbox_payload(Map.get(entry, :sandbox)) do
+      nil ->
+        nil
+
+      sandbox ->
+        %{
+          issue_id: Map.get(entry, :issue_id),
+          issue_identifier: Map.get(entry, :issue_identifier),
+          issue_url: Map.get(entry, :issue_url),
+          issue_status: Map.get(entry, :issue_status) || "retained",
           worker_host: Map.get(entry, :worker_host),
           workspace_path: Map.get(entry, :workspace_path),
           sandbox: sandbox

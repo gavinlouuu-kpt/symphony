@@ -48,6 +48,24 @@ defmodule SymphonyElixir.Cua.Sandbox do
     :ok
   end
 
+  @spec list_live() :: [map()]
+  def list_live do
+    settings = Config.settings!()
+
+    if settings.worker.provider == "cua" do
+      with {:ok, executable} <- executable(settings.cua.executable),
+           {:ok, names} <- live_container_names(executable, settings.cua.name_prefix) do
+        names
+        |> Enum.map(&live_container_inventory(executable, &1, settings))
+        |> Enum.reject(&is_nil/1)
+      else
+        _ -> []
+      end
+    else
+      []
+    end
+  end
+
   @spec sandbox_name(map() | String.t() | nil, String.t()) :: String.t()
   def sandbox_name(issue_or_identifier, prefix) when is_binary(prefix) do
     suffix =
@@ -249,6 +267,122 @@ defmodule SymphonyElixir.Cua.Sandbox do
 
   defp sandbox_lifecycle(%{delete_on_terminal: true}), do: "delete_on_terminal"
   defp sandbox_lifecycle(_cua), do: "preserve"
+
+  defp live_container_names(executable, name_prefix) do
+    prefix =
+      name_prefix
+      |> safe_name_part()
+      |> case do
+        "" -> "symphony"
+        value -> value <> "-"
+      end
+
+    with {:ok, output} <- docker(executable, ["ps", "--filter", "label=symphony.cua=true", "--format", "{{.Names}}"]) do
+      names =
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, prefix))
+
+      {:ok, names}
+    end
+  end
+
+  defp live_container_inventory(executable, name, settings) do
+    with {:ok, inspect} <- container_inspect(executable, name),
+         {:ok, ports} <- published_ports(executable, name) do
+      labels = inspect |> get_in(["Config", "Labels"]) |> normalize_label_map()
+      issue_identifier = Map.get(labels, "symphony.issue_identifier")
+      retained_identifier = blank_to_nil(issue_identifier) || identifier_from_sandbox_name(name, settings.cua.name_prefix)
+
+      %{
+        issue_id: blank_to_nil(Map.get(labels, "symphony.issue_id")),
+        issue_identifier: retained_identifier,
+        issue_url: nil,
+        issue_status: "retained",
+        worker_host: worker_host(settings.cua, ports),
+        workspace_path: retained_workspace_path(settings.workspace.root, retained_identifier),
+        sandbox: sandbox_from_ports(name, ports, settings.cua, container_status(inspect))
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp container_inspect(executable, name) do
+    with {:ok, output} <- docker(executable, ["inspect", name]),
+         {:ok, [inspect | _]} <- Jason.decode(output) do
+      {:ok, inspect}
+    else
+      {:ok, _decoded} -> {:error, :invalid_docker_inspect}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_label_map(labels) when is_map(labels), do: labels
+  defp normalize_label_map(_labels), do: %{}
+
+  defp container_status(inspect) when is_map(inspect) do
+    inspect
+    |> get_in(["State", "Status"])
+    |> case do
+      status when is_binary(status) and status != "" -> status
+      _ -> "running"
+    end
+  end
+
+  defp worker_host(cua, %{ssh: port}) when is_integer(port), do: "#{cua.ssh_user}@#{cua_host(cua)}:#{port}"
+  defp worker_host(_cua, _ports), do: nil
+
+  defp retained_workspace_path(workspace_root, issue_identifier) when is_binary(workspace_root) and is_binary(issue_identifier) and issue_identifier != "" do
+    Path.join(workspace_root, issue_identifier)
+  end
+
+  defp retained_workspace_path(_workspace_root, _issue_identifier), do: nil
+
+  defp sandbox_from_ports(name, ports, cua, status) do
+    host = cua_host(cua)
+
+    %{
+      name: name,
+      provider: "cua",
+      driver: "docker",
+      source: "docker",
+      status: status,
+      host: host,
+      ssh_target: worker_host(cua, ports),
+      ssh_port: Map.get(ports, :ssh),
+      lifecycle: sandbox_lifecycle(cua),
+      vnc_url: maybe_url("vnc", host, Map.get(ports, :vnc)),
+      novnc_url: maybe_url("http", host, Map.get(ports, :novnc)),
+      api_url: maybe_url("http", host, Map.get(ports, :api))
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp identifier_from_sandbox_name(name, name_prefix) do
+    prefix =
+      name_prefix
+      |> safe_name_part()
+      |> case do
+        "" -> "symphony"
+        value -> value
+      end
+
+    case String.trim_leading(name, prefix <> "-") do
+      ^name -> nil
+      suffix -> String.upcase(suffix)
+    end
+  end
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp blank_to_nil(_value), do: nil
 
   defp cua_host(%{host: host}) when is_binary(host) do
     case String.trim(host) do

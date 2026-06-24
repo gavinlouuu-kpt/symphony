@@ -188,6 +188,93 @@ defmodule SymphonyElixir.CuaSandboxTest do
     assert File.read!(trace_file) =~ "rm -f symphony-mt-delete"
   end
 
+  test "list_live returns retained CUA sandboxes from docker labels" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-cua-list-#{System.unique_integer([:positive])}")
+    trace_file = Path.join(test_root, "docker.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    install_fake_executable!(test_root, "docker", trace_file, """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+
+    case "$*" in
+      ps*)
+        printf '%s\\n' 'symphony-mt-review' 'other-prefix-mt-hidden'
+        exit 0
+        ;;
+      "inspect symphony-mt-review")
+        cat <<'JSON'
+    [
+      {
+        "Config": {
+          "Labels": {
+            "symphony.cua": "true",
+            "symphony.issue_id": "issue-review",
+            "symphony.issue_identifier": "MT-REVIEW"
+          }
+        },
+        "State": {"Status": "running"}
+      }
+    ]
+    JSON
+        exit 0
+        ;;
+      port*"22/tcp"*)
+        printf '%s\\n' '127.0.0.1:22123'
+        exit 0
+        ;;
+      port*"5901/tcp"*)
+        printf '%s\\n' '127.0.0.1:16123'
+        exit 0
+        ;;
+      port*"6901/tcp"*)
+        printf '%s\\n' '127.0.0.1:17123'
+        exit 0
+        ;;
+      port*"8000/tcp"*)
+        printf '%s\\n' '127.0.0.1:18123'
+        exit 0
+        ;;
+      *)
+        echo "unexpected docker call: $*" >&2
+        exit 2
+        ;;
+    esac
+    """)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      worker_provider: "cua",
+      workspace_root: "/workspaces",
+      cua_delete_on_terminal: true
+    )
+
+    assert [
+             %{
+               issue_id: "issue-review",
+               issue_identifier: "MT-REVIEW",
+               issue_status: "retained",
+               worker_host: "cua@127.0.0.1:22123",
+               workspace_path: "/workspaces/MT-REVIEW",
+               sandbox: %{
+                 name: "symphony-mt-review",
+                 status: "running",
+                 lifecycle: "delete_on_terminal",
+                 novnc_url: "http://127.0.0.1:17123/"
+               }
+             }
+           ] = Sandbox.list_live()
+
+    trace = File.read!(trace_file)
+    assert trace =~ "ps --filter label=symphony.cua=true --format {{.Names}}"
+    assert trace =~ "inspect symphony-mt-review"
+    refute trace =~ "other-prefix-mt-hidden"
+  end
+
   test "cua worker provider uses noninteractive ssh defaults" do
     test_root = Path.join(System.tmp_dir!(), "symphony-cua-ssh-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
