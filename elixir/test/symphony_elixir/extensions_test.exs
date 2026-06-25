@@ -768,6 +768,48 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
   end
 
+  test "phoenix observability api links and serves local evidence artifacts" do
+    evidence_root = Path.join(System.tmp_dir!(), "symphony-evidence-#{System.unique_integer([:positive])}")
+    previous_evidence_root = System.get_env("SYMPHONY_EVIDENCE_ROOT")
+    File.mkdir_p!(evidence_root)
+    File.write!(Path.join(evidence_root, "MT-BLOCKED-visible-smoke.mp4"), "video")
+    File.write!(Path.join(evidence_root, "OTHER-visible-smoke.mp4"), "other")
+    System.put_env("SYMPHONY_EVIDENCE_ROOT", evidence_root)
+
+    on_exit(fn ->
+      restore_env("SYMPHONY_EVIDENCE_ROOT", previous_evidence_root)
+      File.rm_rf(evidence_root)
+    end)
+
+    orchestrator_name = Module.concat(__MODULE__, :EvidenceOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    state_payload = json_response(get(build_conn(), "/api/v1/state"), 200)
+
+    assert [
+             %{
+               "filename" => "MT-BLOCKED-visible-smoke.mp4",
+               "href" => "/evidence/MT-BLOCKED-visible-smoke.mp4",
+               "kind" => "video",
+               "size_bytes" => 5
+             }
+           ] = get_in(state_payload, ["sandboxes", Access.at(0), "evidence"])
+
+    evidence_response = get(build_conn(), "/evidence/MT-BLOCKED-visible-smoke.mp4")
+    assert response(evidence_response, 200) == "video"
+    assert Plug.Conn.get_resp_header(evidence_response, "content-type") == ["video/mp4; charset=utf-8"]
+
+    assert response(get(build_conn(), "/evidence/OTHER-visible-smoke.mp4"), 200) == "other"
+    assert response(get(build_conn(), "/evidence/.."), 404) == "Not Found"
+  end
+
   defp start_test_endpoint(overrides) do
     endpoint_config =
       :symphony_elixir

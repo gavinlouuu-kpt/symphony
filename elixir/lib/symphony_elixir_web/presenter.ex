@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
   alias SymphonyElixir.Cua.Sandbox, as: CuaSandbox
+  alias SymphonyElixirWeb.Evidence
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -272,6 +273,7 @@ defmodule SymphonyElixirWeb.Presenter do
           workspace_path: Map.get(entry, :workspace_path),
           sandbox: sandbox
         }
+        |> maybe_put_evidence(Map.get(entry, :identifier))
     end
   end
 
@@ -290,6 +292,14 @@ defmodule SymphonyElixirWeb.Presenter do
           workspace_path: Map.get(entry, :workspace_path),
           sandbox: sandbox
         }
+        |> maybe_put_evidence(Map.get(entry, :issue_identifier))
+    end
+  end
+
+  defp maybe_put_evidence(payload, issue_identifier) do
+    case Evidence.files_for_issue(issue_identifier) do
+      [] -> payload
+      artifacts -> Map.put(payload, :evidence, artifacts)
     end
   end
 

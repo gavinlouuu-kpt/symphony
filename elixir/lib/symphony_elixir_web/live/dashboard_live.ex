@@ -135,12 +135,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="empty-state">No active CUA sandboxes.</p>
           <% else %>
             <div class="table-wrap">
-              <table class="data-table" style="min-width: 920px;">
+              <table class="data-table" style="min-width: 1040px;">
                 <thead>
                   <tr>
                     <th>Issue</th>
                     <th>Sandbox</th>
                     <th>Issue status</th>
+                    <th>Evidence</th>
                     <th>Workspace</th>
                     <th>Worker</th>
                   </tr>
@@ -160,6 +161,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <span class={state_badge_class(entry.issue_status)}>
                         <%= entry.issue_status %>
                       </span>
+                    </td>
+                    <td>
+                      <.evidence_links evidence={Map.get(entry, :evidence, [])} />
                     </td>
                     <td>
                       <span class="mono muted workspace-text"><%= entry.workspace_path || "n/a" %></span>
@@ -459,10 +463,46 @@ defmodule SymphonyElixirWeb.DashboardLive do
     """
   end
 
+  attr(:evidence, :list, default: [])
+
+  defp evidence_links(assigns) do
+    assigns = assign(assigns, :evidence, assigns.evidence || [])
+
+    ~H"""
+    <%= if @evidence == [] do %>
+      <span class="muted">n/a</span>
+    <% else %>
+      <span class="sandbox-actions">
+        <a
+          :for={artifact <- @evidence}
+          class="issue-link sandbox-link"
+          href={artifact.href}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <%= artifact_label(artifact) %>
+        </a>
+      </span>
+    <% end %>
+    """
+  end
+
   defp sandbox_value(nil, _key), do: nil
 
   defp sandbox_value(sandbox, key) when is_map(sandbox) do
     Map.get(sandbox, key) || Map.get(sandbox, to_string(key))
+  end
+
+  defp artifact_label(artifact) when is_map(artifact) do
+    kind = Map.get(artifact, :kind) || Map.get(artifact, "kind") || "file"
+    filename = Map.get(artifact, :filename) || Map.get(artifact, "filename") || kind
+
+    case kind do
+      "video" -> "video"
+      "image" -> "image"
+      "log" -> "log"
+      _ -> filename
+    end
   end
 
   defp sandbox_lifecycle_label("delete_on_terminal"), do: "closes when terminal"
