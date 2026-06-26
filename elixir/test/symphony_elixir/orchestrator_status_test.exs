@@ -102,6 +102,91 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }
   end
 
+  test "orchestrator captures agent message deltas for blocked handoff classification" do
+    issue_id = "issue-streamed-blocker"
+    ref = make_ref()
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-STREAM-BLOCK",
+      title: "Streamed blocker test",
+      description: "Capture streamed agent text",
+      state: "Rework",
+      url: "https://example.org/issues/MT-STREAM-BLOCK"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :StreamedBlockedHandoffOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      phase: :builder,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    now = DateTime.utc_now()
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/agent_message_delta",
+           "params" => %{
+             "msg" => %{
+               "payload" => %{
+                 "delta" => "Exit remains `Blocked`; validation is waiting on KIN-95 provisioning."
+               }
+             }
+           }
+         },
+         timestamp: now
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :turn_completed,
+         payload: %{"method" => "turn/completed"},
+         timestamp: now
+       }}
+    )
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert %{error: error} = state.blocked[issue_id]
+    assert error =~ "KIN-95 provisioning"
+  end
+
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do
     issue_id = "issue-usage-snapshot"
 

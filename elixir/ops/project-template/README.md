@@ -222,3 +222,35 @@ biowork        4401
 mib-studio-qt 4402
 symphony      4403
 ```
+
+## Tailscale Serve
+
+To avoid remembering raw Tailscale IPs and project ports, each instance can publish a stable
+Tailscale Serve service:
+
+```bash
+cd "$ROOT"
+bin/tailserve.sh
+```
+
+By default this exposes:
+
+```text
+https://symphony-<instance-id>.<tailnet>/
+```
+
+and proxies it to the local dashboard port. For example:
+
+```text
+https://symphony-biowork.himalayan-coho.ts.net/
+```
+
+Set `SYMPHONY_TAILSERVE_ENABLED=true` to configure Tailscale Serve automatically whenever
+`bin/start.sh` runs. The script writes the resolved service URL to:
+
+```text
+runtime/tailserve.env
+```
+
+New Tailscale service names may require Tailnet admin approval. Existing approved services can be
+updated in place by rerunning `bin/tailserve.sh`.

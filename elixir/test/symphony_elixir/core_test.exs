@@ -681,6 +681,57 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_after_in_range(due_at_ms, scheduled_after_ms, 500, 1_100)
   end
 
+  test "normal builder exit with blocked handoff text is retained as blocked instead of reviewer retry" do
+    issue_id = "issue-builder-blocked"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :BuilderBlockedHandoffOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-BLOCKED",
+      issue: %Issue{id: issue_id, identifier: "MT-BLOCKED", state: "Rework"},
+      phase: :builder,
+      session_id: "thread-builder-blocked",
+      codex_agent_text_tail: "Exit remains `Blocked`; real model-backed validation is waiting on KIN-95 provisioning.",
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    refute MapSet.member?(state.completed, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
+
+    assert %{
+             identifier: "MT-BLOCKED",
+             error: error,
+             phase: :builder
+           } = state.blocked[issue_id]
+
+    assert error =~ "agent reported blocked handoff"
+    assert error =~ "KIN-95 provisioning"
+  end
+
   test "normal reviewer exit schedules builder fallback retry" do
     issue_id = "issue-reviewed-still-active"
     ref = make_ref()

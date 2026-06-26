@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.{IssueIntake, Linear.Adapter}
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -36,6 +36,19 @@ defmodule SymphonyElixir.ExtensionsTest do
         _ ->
           Process.get({__MODULE__, :graphql_result})
       end
+    end
+  end
+
+  defmodule IssueIntakeLinearClient do
+    def graphql(query, variables) do
+      test_pid = Application.fetch_env!(:symphony_elixir, :issue_intake_test_pid)
+      results = Application.fetch_env!(:symphony_elixir, :issue_intake_test_results)
+      send(test_pid, {:issue_intake_graphql, query, variables})
+
+      Agent.get_and_update(results, fn
+        [result | rest] -> {result, rest}
+        [] -> {{:error, :unexpected_graphql}, []}
+      end)
     end
   end
 
@@ -672,6 +685,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "https://linear.app/project/project/issues"
     assert html =~ "Review console"
     assert html =~ "Private issue-scoped messages"
+    assert html =~ "Create issue"
+    assert html =~ ~s(href="/issues/new")
     assert html =~ "Orchestrator"
     assert html =~ "Reviewer"
     assert html =~ "MT-HTTP"
@@ -742,6 +757,133 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
 
     refute render(view) =~ "javascript:alert"
+  end
+
+  test "issue creator liveview renders project context and intake controls" do
+    orchestrator_name = Module.concat(__MODULE__, :IssueCreatorOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/issues/new")
+
+    assert html =~ "Issue Creator"
+    assert html =~ "Scan and Draft"
+    assert html =~ "New request"
+    assert html =~ "project"
+    assert html =~ ~s(href="/")
+  end
+
+  test "issue intake creates a Linear issue from the reviewed draft" do
+    ensure_issue_intake_running()
+    previous_state = :sys.get_state(IssueIntake)
+    previous_results = Application.get_env(:symphony_elixir, :issue_intake_test_results)
+    previous_test_pid = Application.get_env(:symphony_elixir, :issue_intake_test_pid)
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    {:ok, results} =
+      Agent.start_link(fn ->
+        [
+          {:ok,
+           %{
+             "data" => %{
+               "projects" => %{
+                 "nodes" => [
+                   %{
+                     "id" => "project-1",
+                     "name" => "Project",
+                     "teams" => %{
+                       "nodes" => [
+                         %{
+                           "id" => "team-1",
+                           "key" => "KIN",
+                           "states" => %{
+                             "nodes" => [
+                               %{"id" => "state-todo", "name" => "Todo"},
+                               %{"id" => "state-review", "name" => "In Review"}
+                             ]
+                           }
+                         }
+                       ]
+                     }
+                   }
+                 ]
+               }
+             }
+           }},
+          {:ok,
+           %{
+             "data" => %{
+               "issueCreate" => %{
+                 "success" => true,
+                 "issue" => %{
+                   "id" => "issue-101",
+                   "identifier" => "KIN-101",
+                   "title" => "Add intake workflow",
+                   "url" => "https://linear.app/kingsphase/issue/KIN-101/add-intake-workflow",
+                   "state" => %{"name" => "Todo"}
+                 }
+               }
+             }
+           }}
+        ]
+      end)
+
+    Application.put_env(:symphony_elixir, :linear_client_module, IssueIntakeLinearClient)
+    Application.put_env(:symphony_elixir, :issue_intake_test_results, results)
+    Application.put_env(:symphony_elixir, :issue_intake_test_pid, self())
+
+    on_exit(fn ->
+      :sys.replace_state(IssueIntake, fn _state -> previous_state end)
+
+      if is_nil(previous_results) do
+        Application.delete_env(:symphony_elixir, :issue_intake_test_results)
+      else
+        Application.put_env(:symphony_elixir, :issue_intake_test_results, previous_results)
+      end
+
+      if is_nil(previous_test_pid) do
+        Application.delete_env(:symphony_elixir, :issue_intake_test_pid)
+      else
+        Application.put_env(:symphony_elixir, :issue_intake_test_pid, previous_test_pid)
+      end
+
+      if Process.alive?(results), do: Agent.stop(results)
+    end)
+
+    session = %{
+      id: 1,
+      kind: "feature",
+      title: "Add intake workflow",
+      original_request: "Create a planning page.",
+      status: "drafting",
+      messages: [%{role: "user", body: "Create a planning page.", created_at: now}],
+      scan: %{repo_url: "repo", branch: "main", file_count: 2, top_level: [], languages: [], important_files: [], test_hints: []},
+      draft: "Reviewed task draft",
+      created_issue: nil,
+      created_at: now,
+      updated_at: now
+    }
+
+    :sys.replace_state(IssueIntake, fn _state -> %IssueIntake{sessions: [session], next_id: 2} end)
+
+    assert {:ok, updated} = IssueIntake.create_linear_issue(1)
+    assert updated.created_issue.identifier == "KIN-101"
+    assert updated.created_issue.state == "Todo"
+
+    assert_receive {:issue_intake_graphql, project_query, %{projectSlug: "project"}}
+    assert project_query =~ "SymphonyIssueIntakeProject"
+
+    assert_receive {:issue_intake_graphql, create_query, create_variables}
+    assert create_query =~ "SymphonyIssueIntakeCreateIssue"
+    assert create_variables.title == "Add intake workflow"
+    assert create_variables.description == "Reviewed task draft"
+    assert create_variables.stateId == "state-todo"
   end
 
   test "review console answers retained sandbox questions with dashboard context" do
@@ -1015,6 +1157,15 @@ defmodule SymphonyElixir.ExtensionsTest do
         {:ok, _pid} -> :ok
         {:error, {:already_started, _pid}} -> :ok
       end
+    end
+  end
+
+  defp ensure_issue_intake_running do
+    if Process.whereis(IssueIntake) do
+      :ok
+    else
+      start_supervised!(IssueIntake)
+      :ok
     end
   end
 end

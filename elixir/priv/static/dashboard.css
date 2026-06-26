@@ -82,6 +82,27 @@ button.secondary:hover {
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
 }
 
+.nav-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.2rem;
+  padding: 0.42rem 0.82rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+}
+
+.nav-pill:hover {
+  color: var(--accent-ink);
+  border-color: rgba(16, 163, 127, 0.3);
+  background: var(--accent-soft);
+}
+
 .subtle-button {
   appearance: none;
   border: 1px solid var(--line-strong);
@@ -315,7 +336,8 @@ pre,
 }
 
 .console-field select,
-.console-field textarea {
+.console-field textarea,
+.console-field input {
   width: 100%;
   border: 1px solid var(--line-strong);
   border-radius: 10px;
@@ -366,6 +388,134 @@ pre,
 .console-message-human {
   border-color: rgba(16, 163, 127, 0.28);
   background: var(--accent-soft);
+}
+
+.console-message-user {
+  border-color: rgba(16, 163, 127, 0.28);
+  background: var(--accent-soft);
+}
+
+.issue-creator-grid {
+  display: grid;
+  grid-template-columns: minmax(18rem, 0.82fr) minmax(0, 1.58fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.intake-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.intake-form,
+.intake-message-form {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.session-list {
+  display: grid;
+  gap: 0.55rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+}
+
+.session-list h3,
+.scan-summary h3,
+.intake-chat h3,
+.draft-panel h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+
+.session-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: center;
+  width: 100%;
+  min-height: 2.6rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.64);
+  color: var(--ink);
+  padding: 0.55rem 0.68rem;
+  text-align: left;
+  box-shadow: none;
+}
+
+.session-button:hover {
+  transform: none;
+  box-shadow: var(--shadow-sm);
+  border-color: var(--line-strong);
+  background: white;
+}
+
+.session-button span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-button-active {
+  border-color: rgba(16, 163, 127, 0.32);
+  background: var(--accent-soft);
+}
+
+.created-issue-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgba(16, 163, 127, 0.22);
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.created-issue-banner a {
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+
+.scan-summary,
+.intake-chat,
+.draft-panel {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.scan-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin: 0;
+}
+
+.scan-grid div {
+  min-width: 0;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.scan-grid dt {
+  margin: 0 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.scan-grid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .metric-grid {
@@ -611,7 +761,8 @@ pre,
   }
 
   .hero-grid,
-  .console-form {
+  .console-form,
+  .issue-creator-grid {
     grid-template-columns: 1fr;
   }
 
@@ -626,6 +777,10 @@ pre,
 
 @media (max-width: 560px) {
   .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .scan-grid {
     grid-template-columns: 1fr;
   }
 

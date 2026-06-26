@@ -13,6 +13,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @agent_text_tail_max_chars 8_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -200,27 +201,32 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
-    if input_required_blocker?(running_entry) do
-      block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
-    else
-      phase = running_entry_phase(running_entry)
-      next_phase = next_phase_after_normal_exit(phase)
-      delay_type = retry_delay_type_for_phase(next_phase)
+    cond do
+      input_required_blocker?(running_entry) ->
+        block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
 
-      Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id} phase=#{phase}; scheduling #{next_phase} phase check")
+      blocked_handoff?(running_entry) ->
+        block_agent_reported_handoff(state, issue_id, running_entry, session_id)
 
-      state
-      |> complete_issue(issue_id)
-      |> schedule_issue_retry(issue_id, 1, %{
-        identifier: running_entry.identifier,
-        issue_url: running_entry.issue.url,
-        delay_type: delay_type,
-        phase: next_phase,
-        review_note: Map.get(running_entry, :review_note),
-        worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path),
-        sandbox: Map.get(running_entry, :sandbox)
-      })
+      true ->
+        phase = running_entry_phase(running_entry)
+        next_phase = next_phase_after_normal_exit(phase)
+        delay_type = retry_delay_type_for_phase(next_phase)
+
+        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id} phase=#{phase}; scheduling #{next_phase} phase check")
+
+        state
+        |> complete_issue(issue_id)
+        |> schedule_issue_retry(issue_id, 1, %{
+          identifier: running_entry.identifier,
+          issue_url: running_entry.issue.url,
+          delay_type: delay_type,
+          phase: next_phase,
+          review_note: Map.get(running_entry, :review_note),
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path),
+          sandbox: Map.get(running_entry, :sandbox)
+        })
     end
   end
 
@@ -236,6 +242,14 @@ defmodule SymphonyElixir.Orchestrator do
     error = blocker_error(running_entry, "agent exited: #{inspect(reason)}")
 
     Logger.warning("Agent task blocked for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}")
+
+    block_issue_from_entry(state, issue_id, running_entry, error)
+  end
+
+  defp block_agent_reported_handoff(state, issue_id, running_entry, session_id) do
+    error = blocked_handoff_error(running_entry)
+
+    Logger.warning("Agent task reported blocked handoff for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}")
 
     block_issue_from_entry(state, issue_id, running_entry, error)
   end
@@ -675,6 +689,35 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp input_required_blocker?(_running_entry), do: false
 
+  defp blocked_handoff?(running_entry) when is_map(running_entry) do
+    running_entry
+    |> Map.get(:codex_agent_text_tail)
+    |> explicit_blocked_handoff_text?()
+  end
+
+  defp blocked_handoff?(_running_entry), do: false
+
+  defp explicit_blocked_handoff_text?(text) when is_binary(text) do
+    normalized =
+      text
+      |> String.downcase()
+      |> String.replace(~r/[`*_]/, "")
+      |> String.replace(~r/\s+/, " ")
+
+    String.contains?(normalized, [
+      "blocked handoff",
+      "exit remains blocked",
+      "i am blocked",
+      "i'm blocked",
+      "cannot proceed",
+      "can't proceed",
+      "external blocker",
+      "waiting on"
+    ])
+  end
+
+  defp explicit_blocked_handoff_text?(_text), do: false
+
   defp input_required_completion_outcome(completion) when is_map(completion) do
     outcome = Map.get(completion, :outcome) || Map.get(completion, "outcome")
     normalize_input_required_outcome(outcome)
@@ -705,6 +748,30 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp blocker_error(_running_entry, fallback), do: fallback
+
+  defp blocked_handoff_error(running_entry) when is_map(running_entry) do
+    running_entry
+    |> Map.get(:codex_agent_text_tail)
+    |> blocked_handoff_excerpt()
+    |> case do
+      nil -> "agent reported blocked handoff"
+      excerpt -> "agent reported blocked handoff: #{excerpt}"
+    end
+  end
+
+  defp blocked_handoff_error(_running_entry), do: "agent reported blocked handoff"
+
+  defp blocked_handoff_excerpt(text) when is_binary(text) do
+    text
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> case do
+      "" -> nil
+      trimmed -> String.slice(trimmed, 0, 240)
+    end
+  end
+
+  defp blocked_handoff_excerpt(_text), do: nil
 
   defp codex_event_blocker_error(:turn_input_required), do: "codex turn requires operator input"
   defp codex_event_blocker_error(:approval_required), do: "codex turn requires approval"
@@ -990,6 +1057,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_input_tokens: 0,
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
+            codex_agent_text_tail: "",
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
@@ -1725,6 +1793,11 @@ defmodule SymphonyElixir.Orchestrator do
         session_id: session_id_for_update(running_entry.session_id, update),
         last_codex_event: event,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
+        codex_agent_text_tail:
+          append_agent_text_tail(
+            Map.get(running_entry, :codex_agent_text_tail, ""),
+            extract_agent_text_delta(update)
+          ),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
         codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
@@ -1779,6 +1852,68 @@ defmodule SymphonyElixir.Orchestrator do
       message: update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
+  end
+
+  defp append_agent_text_tail(existing, nil) when is_binary(existing), do: existing
+  defp append_agent_text_tail(_existing, nil), do: ""
+
+  defp append_agent_text_tail(existing, delta) when is_binary(delta) do
+    text = to_string(existing || "") <> delta
+
+    if String.length(text) > @agent_text_tail_max_chars do
+      text
+      |> String.reverse()
+      |> String.slice(0, @agent_text_tail_max_chars)
+      |> String.reverse()
+    else
+      text
+    end
+  end
+
+  defp append_agent_text_tail(existing, _delta) when is_binary(existing), do: existing
+  defp append_agent_text_tail(_existing, _delta), do: ""
+
+  defp extract_agent_text_delta(%{payload: payload}), do: agent_text_delta_from_payload(payload)
+  defp extract_agent_text_delta(%{"payload" => payload}), do: agent_text_delta_from_payload(payload)
+  defp extract_agent_text_delta(update), do: agent_text_delta_from_payload(update)
+
+  defp agent_text_delta_from_payload(payload) when is_map(payload) do
+    method = Map.get(payload, "method") || Map.get(payload, :method)
+
+    if agent_message_method?(method) do
+      Enum.find_value(agent_text_delta_paths(), fn path ->
+        case map_at_path(payload, path) do
+          value when is_binary(value) -> value
+          _ -> nil
+        end
+      end)
+    end
+  end
+
+  defp agent_text_delta_from_payload(_payload), do: nil
+
+  defp agent_message_method?(method) when is_binary(method) do
+    String.contains?(method, "agentMessage") or
+      String.contains?(method, "agent_message")
+  end
+
+  defp agent_message_method?(_method), do: false
+
+  defp agent_text_delta_paths do
+    [
+      ["params", "delta"],
+      [:params, :delta],
+      ["params", "text"],
+      [:params, :text],
+      ["params", "content"],
+      [:params, :content],
+      ["params", "msg", "payload", "delta"],
+      [:params, :msg, :payload, :delta],
+      ["params", "msg", "payload", "text"],
+      [:params, :msg, :payload, :text],
+      ["params", "msg", "payload", "content"],
+      [:params, :msg, :payload, :content]
+    ]
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do

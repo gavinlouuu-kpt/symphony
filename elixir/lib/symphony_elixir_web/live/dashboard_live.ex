@@ -111,10 +111,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </section>
       <% else %>
         <section class="project-panel">
-          <div class="project-panel-header">
+        <div class="project-panel-header">
+          <div>
             <p class="eyebrow">Project</p>
             <h2 class="project-title"><%= project_name(@payload.project) %></h2>
           </div>
+          <a class="nav-pill" href="/issues/new">Create issue</a>
+        </div>
 
           <dl class="project-grid">
             <div>
@@ -156,6 +159,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <div>
               <dt>CUA host</dt>
               <dd class="mono"><%= project_value(@payload.project, :cua_host) %></dd>
+            </div>
+            <div :if={@payload.project[:tailserve_url]}>
+              <dt>Tailscale</dt>
+              <dd>
+                <a href={@payload.project.tailserve_url} target="_blank" rel="noopener noreferrer">
+                  <%= @payload.project.tailserve_url %>
+                </a>
+              </dd>
             </div>
             <div>
               <dt>Workspace root</dt>

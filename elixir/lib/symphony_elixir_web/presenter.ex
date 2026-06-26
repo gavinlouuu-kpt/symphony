@@ -117,7 +117,8 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_provider: settings.worker.provider,
       cua_host: settings.cua.host,
       dashboard_host: settings.server.host,
-      dashboard_port: Config.server_port()
+      dashboard_port: Config.server_port(),
+      tailserve_url: tailserve_url()
     }
     |> Enum.reject(fn {_key, value} -> blank?(value) end)
     |> Map.new()
@@ -127,6 +128,29 @@ defmodule SymphonyElixirWeb.Presenter do
     name
     |> System.get_env()
     |> normalize_optional_string()
+  end
+
+  defp tailserve_url do
+    case env_value("SYMPHONY_TAILSERVE_URL") || runtime_tailserve_url() do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp runtime_tailserve_url do
+    with instance_root when is_binary(instance_root) <- env_value("SYMPHONY_INSTANCE_ROOT"),
+         {:ok, contents} <- File.read(Path.join([instance_root, "runtime", "tailserve.env"])) do
+      contents
+      |> String.split("\n", trim: true)
+      |> Enum.find_value(fn line ->
+        case String.split(line, "=", parts: 2) do
+          ["SYMPHONY_TAILSERVE_URL", value] -> value |> String.trim("'\"") |> normalize_optional_string()
+          _ -> nil
+        end
+      end)
+    else
+      _ -> nil
+    end
   end
 
   defp project_url(project_slug) when is_binary(project_slug) and project_slug != "",
