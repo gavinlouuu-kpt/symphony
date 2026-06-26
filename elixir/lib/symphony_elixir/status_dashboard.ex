@@ -1397,11 +1397,6 @@ defmodule SymphonyElixir.StatusDashboard do
     humanize_codex_wrapper_event(suffix, payload)
   end
 
-  defp humanize_codex_method("error", payload), do: humanize_codex_error_event("error", payload)
-
-  defp humanize_codex_method("stream_error", payload),
-    do: humanize_codex_error_event("stream error", payload)
-
   defp humanize_codex_method(method, payload) do
     msg_type =
       map_path(payload, ["params", "msg", "type"]) ||
@@ -1510,10 +1505,6 @@ defmodule SymphonyElixir.StatusDashboard do
   defp humanize_codex_wrapper_event("exec_command_output_delta", _payload), do: "command output streaming"
   defp humanize_codex_wrapper_event("mcp_tool_call_begin", _payload), do: "mcp tool call started"
   defp humanize_codex_wrapper_event("mcp_tool_call_end", _payload), do: "mcp tool call completed"
-  defp humanize_codex_wrapper_event("error", payload), do: humanize_codex_error_event("error", payload)
-
-  defp humanize_codex_wrapper_event("stream_error", payload),
-    do: humanize_codex_error_event("stream error", payload)
 
   defp humanize_codex_wrapper_event("token_count", payload) do
     usage = extract_first_path(payload, token_usage_paths())
@@ -1693,29 +1684,6 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
-  defp humanize_codex_error_event(label, payload) do
-    case extract_error_message(payload) do
-      nil -> label
-      message -> "#{label}: #{message}"
-    end
-  end
-
-  defp extract_error_message(payload) do
-    value = extract_first_path(payload, error_message_paths())
-
-    cond do
-      is_binary(value) ->
-        trimmed = String.trim(value)
-        if trimmed == "", do: nil, else: inline_text(trimmed)
-
-      is_map(value) ->
-        value |> format_error_value() |> inline_text()
-
-      true ->
-        nil
-    end
-  end
-
   defp extract_reasoning_focus(payload) do
     value = extract_first_path(payload, reasoning_focus_paths())
 
@@ -1884,27 +1852,6 @@ defmodule SymphonyElixir.StatusDashboard do
       [:params, :msg, :payload, :summaryText],
       ["params", "msg", "payload", "content"],
       [:params, :msg, :payload, :content]
-    ]
-  end
-
-  defp error_message_paths do
-    [
-      ["params", "msg", "message"],
-      [:params, :msg, :message],
-      ["params", "msg", "error", "message"],
-      [:params, :msg, :error, :message],
-      ["params", "msg", "error"],
-      [:params, :msg, :error],
-      ["params", "msg", "payload", "message"],
-      [:params, :msg, :payload, :message],
-      ["params", "msg", "payload", "error", "message"],
-      [:params, :msg, :payload, :error, :message],
-      ["params", "message"],
-      [:params, :message],
-      ["params", "error", "message"],
-      [:params, :error, :message],
-      ["params", "error"],
-      [:params, :error]
     ]
   end
 

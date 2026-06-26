@@ -5,7 +5,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixir.{Orchestrator, ReviewConsole}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -14,7 +13,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
     socket =
       socket
       |> assign(:payload, load_payload())
-      |> assign(:console_messages, ReviewConsole.list())
       |> assign(:now, DateTime.utc_now())
 
     if connected?(socket) do
@@ -36,37 +34,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:payload, load_payload())
-     |> assign(:console_messages, ReviewConsole.list())
      |> assign(:now, DateTime.utc_now())}
-  end
-
-  @impl true
-  def handle_event("console_send", %{"console" => params}, socket) do
-    payload = socket.assigns.payload
-    issue_identifier = normalize_console_param(params["issue_identifier"])
-    target = normalize_console_target(params["target"])
-    body = normalize_console_param(params["body"])
-
-    cond do
-      payload[:error] ->
-        {:noreply, socket}
-
-      issue_identifier == "" or body == "" ->
-        {:noreply, assign(socket, :console_messages, ReviewConsole.list())}
-
-      true ->
-        :ok = append_console_message(issue_identifier, target, "human", body)
-        response = console_response(payload, issue_identifier, target, body)
-
-        {role, response_body} = response
-        :ok = append_console_message(issue_identifier, target, role, response_body)
-
-        {:noreply,
-         socket
-         |> assign(:payload, load_payload())
-         |> assign(:console_messages, ReviewConsole.list())
-         |> assign(:now, DateTime.utc_now())}
-    end
   end
 
   @impl true
@@ -80,7 +48,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               Symphony Observability
             </p>
             <h1 class="hero-title">
-              <%= dashboard_title(@payload) %>
+              Operations Dashboard
             </h1>
             <p class="hero-copy">
               Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
@@ -110,120 +78,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </p>
         </section>
       <% else %>
-        <section class="project-panel">
-        <div class="project-panel-header">
-          <div>
-            <p class="eyebrow">Project</p>
-            <h2 class="project-title"><%= project_name(@payload.project) %></h2>
-          </div>
-          <a class="nav-pill" href="/issues/new">Create issue</a>
-        </div>
-
-          <dl class="project-grid">
-            <div>
-              <dt>Instance</dt>
-              <dd class="mono"><%= project_value(@payload.project, :instance_id) %></dd>
-            </div>
-            <div>
-              <dt>Linear</dt>
-              <dd>
-                <%= if @payload.project[:project_url] do %>
-                  <a href={@payload.project.project_url} target="_blank" rel="noopener noreferrer">
-                    <%= project_value(@payload.project, :project_slug) %>
-                  </a>
-                <% else %>
-                  <span class="mono"><%= project_value(@payload.project, :project_slug) %></span>
-                <% end %>
-              </dd>
-            </div>
-            <div>
-              <dt>Repository</dt>
-              <dd>
-                <%= if @payload.project[:source_repo_url] do %>
-                  <a href={@payload.project.source_repo_url} target="_blank" rel="noopener noreferrer">
-                    <%= repo_label(@payload.project.source_repo_url) %>
-                  </a>
-                <% else %>
-                  <span class="muted">n/a</span>
-                <% end %>
-              </dd>
-            </div>
-            <div>
-              <dt>Branch</dt>
-              <dd class="mono"><%= project_value(@payload.project, :source_repo_branch) %></dd>
-            </div>
-            <div>
-              <dt>Worker</dt>
-              <dd class="mono"><%= project_value(@payload.project, :worker_provider) %></dd>
-            </div>
-            <div>
-              <dt>CUA host</dt>
-              <dd class="mono"><%= project_value(@payload.project, :cua_host) %></dd>
-            </div>
-            <div :if={@payload.project[:tailserve_url]}>
-              <dt>Tailscale</dt>
-              <dd>
-                <a href={@payload.project.tailserve_url} target="_blank" rel="noopener noreferrer">
-                  <%= @payload.project.tailserve_url %>
-                </a>
-              </dd>
-            </div>
-            <div>
-              <dt>Workspace root</dt>
-              <dd class="mono project-path"><%= project_value(@payload.project, :workspace_root) %></dd>
-            </div>
-          </dl>
-        </section>
-
-        <section class="section-card review-console">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Review console</h2>
-              <p class="section-copy">Private issue-scoped messages to the orchestrator or next reviewer phase.</p>
-            </div>
-          </div>
-
-          <.form for={%{}} as={:console} phx-submit="console_send" class="console-form">
-            <label class="console-field">
-              <span>Issue</span>
-              <select name="console[issue_identifier]">
-                <option :for={identifier <- console_issue_options(@payload)} value={identifier}>
-                  <%= identifier %>
-                </option>
-              </select>
-            </label>
-
-            <label class="console-field">
-              <span>Target</span>
-              <select name="console[target]">
-                <option value="orchestrator">Orchestrator</option>
-                <option value="reviewer">Reviewer</option>
-              </select>
-            </label>
-
-            <label class="console-field console-message-field">
-              <span>Message</span>
-              <textarea name="console[body]" rows="3" placeholder="Ask for status, request a reviewer check, or leave a note for human review."></textarea>
-            </label>
-
-            <button type="submit">Send</button>
-          </.form>
-
-          <div class="console-log">
-            <%= if @console_messages == [] do %>
-              <p class="empty-state">No console messages yet.</p>
-            <% else %>
-              <article :for={message <- console_messages_for_display(@console_messages)} class={"console-message console-message-#{message.role}"}>
-                <header>
-                  <span class="console-role"><%= console_role_label(message.role) %></span>
-                  <span class="mono muted"><%= message.issue_identifier %> · <%= message.target %> · <%= DateTime.to_iso8601(message.created_at) %></span>
-                </header>
-                <p><%= message.body %></p>
-              </article>
-            <% end %>
-          </div>
-        </section>
-
         <section class="metric-grid">
           <article class="metric-card">
             <p class="metric-label">Running</p>
@@ -297,7 +151,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <.human_review_badge entry={entry} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -342,7 +195,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <col style="width: 12rem;" />
                   <col style="width: 11rem;" />
                   <col style="width: 8rem;" />
-                  <col style="width: 7rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
                   <col />
@@ -352,7 +204,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr>
                     <th>Issue</th>
                     <th>Sandbox</th>
-                    <th>Phase</th>
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
@@ -365,17 +216,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <.human_review_badge entry={entry} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
                     <td>
                       <.sandbox_links sandbox={entry.sandbox} />
-                    </td>
-                    <td>
-                      <span class={state_badge_class(entry.phase)}>
-                        <%= entry.phase %>
-                      </span>
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state)}>
@@ -444,7 +289,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr>
                     <th>Issue</th>
                     <th>Sandbox</th>
-                    <th>Phase</th>
                     <th>State</th>
                     <th>Session</th>
                     <th>Blocked at</th>
@@ -457,17 +301,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <.human_review_badge entry={entry} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
                     <td>
                       <.sandbox_links sandbox={entry.sandbox} />
-                    </td>
-                    <td>
-                      <span class={state_badge_class(entry.phase)}>
-                        <%= entry.phase %>
-                      </span>
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state || "Blocked")}>
@@ -529,7 +367,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr>
                     <th>Issue</th>
                     <th>Sandbox</th>
-                    <th>Phase</th>
                     <th>Attempt</th>
                     <th>Due at</th>
                     <th>Error</th>
@@ -545,11 +382,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td>
                       <.sandbox_links sandbox={entry.sandbox} />
-                    </td>
-                    <td>
-                      <span class={state_badge_class(entry.phase)}>
-                        <%= entry.phase %>
-                      </span>
                     </td>
                     <td><%= entry.attempt %></td>
                     <td class="mono"><%= entry.due_at || "n/a" %></td>
@@ -569,236 +401,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
 
-  @doc false
-  def console_response_for_test(payload, issue_identifier, target, body) do
-    console_response(payload, issue_identifier, target, body)
-  end
-
-  defp dashboard_title(%{project: project}) when is_map(project) do
-    case project_name(project) do
-      "unknown project" -> "Operations Dashboard"
-      name -> "#{name} Dashboard"
-    end
-  end
-
-  defp dashboard_title(_payload), do: "Operations Dashboard"
-
-  defp project_name(project) when is_map(project) do
-    Map.get(project, :instance_id) || Map.get(project, :project_slug) || repo_name(Map.get(project, :source_repo_url)) ||
-      "unknown project"
-  end
-
-  defp project_name(_project), do: "unknown project"
-
-  defp project_value(project, key) when is_map(project) do
-    case Map.get(project, key) do
-      value when is_binary(value) and value != "" -> value
-      value when is_integer(value) -> Integer.to_string(value)
-      value when is_atom(value) -> Atom.to_string(value)
-      _ -> "n/a"
-    end
-  end
-
-  defp project_value(_project, _key), do: "n/a"
-
-  defp repo_label(repo_url) when is_binary(repo_url) and repo_url != "" do
-    repo_name(repo_url) || repo_url
-  end
-
-  defp repo_label(_repo_url), do: "n/a"
-
-  defp repo_name(repo_url) when is_binary(repo_url) and repo_url != "" do
-    repo_url
-    |> String.trim_trailing("/")
-    |> String.split("/")
-    |> Enum.take(-2)
-    |> Enum.join("/")
-    |> case do
-      "" -> nil
-      label -> label
-    end
-  end
-
-  defp repo_name(_repo_url), do: nil
-
-  defp console_issue_options(%{running: running, retrying: retrying, blocked: blocked, sandboxes: sandboxes}) do
-    [running, retrying, blocked, sandboxes]
-    |> List.flatten()
-    |> Enum.flat_map(fn
-      %{issue_identifier: identifier} when is_binary(identifier) and identifier != "" -> [identifier]
-      _ -> []
-    end)
-    |> Enum.uniq()
-    |> Enum.sort()
-  end
-
-  defp console_issue_options(_payload), do: []
-
-  defp console_messages_for_display(messages) when is_list(messages) do
-    messages
-    |> Enum.take(30)
-    |> Enum.reverse()
-  end
-
-  defp console_role_label("human"), do: "You"
-  defp console_role_label("reviewer"), do: "Reviewer"
-  defp console_role_label("orchestrator"), do: "Orchestrator"
-  defp console_role_label(role), do: role
-
-  defp normalize_console_param(value) when is_binary(value), do: String.trim(value)
-  defp normalize_console_param(_value), do: ""
-
-  defp normalize_console_target("reviewer"), do: "reviewer"
-  defp normalize_console_target(_target), do: "orchestrator"
-
-  defp console_response(payload, issue_identifier, target, body) do
-    case console_dashboard_context(payload, issue_identifier) do
-      {:retained, sandbox_entry} when target == "reviewer" ->
-        retained_reviewer_console_response(sandbox_entry, body)
-
-      {:retained, sandbox_entry} ->
-        retained_console_response(sandbox_entry, target)
-
-      _context ->
-        orchestrator_console_response(issue_identifier, target, body)
-    end
-  end
-
-  defp retained_reviewer_console_response(sandbox_entry, body) do
-    case Orchestrator.review_console_message(orchestrator(), %{
-           issue_identifier: Map.get(sandbox_entry, :issue_identifier),
-           target: "reviewer",
-           body: body,
-           retained_sandbox: sandbox_entry
-         }) do
-      {:ok, %{role: role, body: response_body}} ->
-        {role, response_body}
-
-      {:error, :unavailable} ->
-        retained_console_response(sandbox_entry, "reviewer")
-    end
-  end
-
-  defp orchestrator_console_response(issue_identifier, target, body) do
-    case Orchestrator.review_console_message(orchestrator(), %{
-           issue_identifier: issue_identifier,
-           target: target,
-           body: body
-         }) do
-      {:ok, %{role: role, body: response_body}} ->
-        {role, response_body}
-
-      {:error, :unavailable} ->
-        {"orchestrator", "The orchestrator is unavailable."}
-    end
-  end
-
-  defp console_dashboard_context(%{running: running, retrying: retrying, blocked: blocked, sandboxes: sandboxes}, issue_identifier) do
-    cond do
-      Enum.any?(running, &(&1.issue_identifier == issue_identifier)) ->
-        :active
-
-      Enum.any?(retrying, &(&1.issue_identifier == issue_identifier)) ->
-        :active
-
-      Enum.any?(blocked, &(&1.issue_identifier == issue_identifier)) ->
-        :active
-
-      retained = Enum.find(sandboxes, &retained_sandbox_context?(&1, issue_identifier)) ->
-        {:retained, retained}
-
-      true ->
-        :missing
-    end
-  end
-
-  defp console_dashboard_context(_payload, _issue_identifier), do: :missing
-
-  defp retained_sandbox_context?(sandbox_entry, issue_identifier) do
-    sandbox_entry.issue_identifier == issue_identifier and
-      sandbox_entry.issue_status in ["retained", "human_review"]
-  end
-
-  defp retained_console_response(sandbox_entry, "reviewer") do
-    issue_identifier = Map.get(sandbox_entry, :issue_identifier, "issue")
-
-    {
-      "reviewer",
-      [
-        "#{issue_identifier} is retained for inspection, but it is not in a running/retrying/blocked orchestration state, so I cannot start or talk to a live reviewer for it from here.",
-        retained_evidence_sentence(sandbox_entry),
-        "For review evidence, I can only see the retained dashboard artifacts and sandbox links. I do not have persistent reviewer memory beyond this runtime console, and I have not read the Linear workpad in this retained-only state.",
-        "To run a fresh reviewer, move the Linear issue back to an active state such as Rework, then send the reviewer note again."
-      ]
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.join("\n\n")
-    }
-  end
-
-  defp retained_console_response(sandbox_entry, _target) do
-    issue_identifier = Map.get(sandbox_entry, :issue_identifier, "issue")
-    workspace = Map.get(sandbox_entry, :workspace_path) || "n/a"
-    sandbox = Map.get(sandbox_entry, :sandbox) || %{}
-    novnc = sandbox_value(sandbox, :novnc_url) || "n/a"
-
-    {
-      "orchestrator",
-      [
-        "#{issue_identifier} is retained, not actively running. The sandbox is still available for human inspection.",
-        "Workspace: #{workspace}",
-        "noVNC: #{novnc}",
-        retained_evidence_sentence(sandbox_entry),
-        "Console messages are runtime-only memory and clear on service restart."
-      ]
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.join("\n\n")
-    }
-  end
-
-  defp retained_evidence_sentence(sandbox_entry) do
-    evidence = Map.get(sandbox_entry, :evidence, [])
-
-    case evidence do
-      [] ->
-        "No dashboard evidence artifacts are linked for this retained sandbox."
-
-      artifacts ->
-        labels =
-          artifacts
-          |> Enum.map(&evidence_console_label/1)
-          |> Enum.reject(&(&1 == ""))
-          |> Enum.join(", ")
-
-        "Dashboard evidence artifacts currently linked: #{labels}."
-    end
-  end
-
-  defp evidence_console_label(artifact) when is_map(artifact) do
-    filename = Map.get(artifact, :filename) || Map.get(artifact, "filename")
-    kind = Map.get(artifact, :kind) || Map.get(artifact, "kind")
-
-    cond do
-      is_binary(filename) and is_binary(kind) -> "#{kind}: #{filename}"
-      is_binary(filename) -> filename
-      is_binary(kind) -> kind
-      true -> ""
-    end
-  end
-
-  defp evidence_console_label(_artifact), do: ""
-
-  defp append_console_message(issue_identifier, target, role, body) do
-    case ReviewConsole.append(%{
-           issue_identifier: issue_identifier,
-           target: target,
-           role: role,
-           body: body
-         }) do
-      {:ok, _message} -> :ok
-      {:error, :unavailable} -> :ok
-    end
-  end
-
   defp orchestrator do
     Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
   end
@@ -815,26 +417,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     ~H"""
     <%= if @href do %>
-     <a
-       class="issue-id issue-id-link"
-       href={@href}
-       target="_blank"
-       rel="noopener noreferrer"
-       aria-label={"Open #{@identifier} in the issue tracker"}
-     ><%= @identifier %></a>
+      <a
+        class="issue-id issue-id-link"
+        href={@href}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={"Open #{@identifier} in the issue tracker"}
+      ><%= @identifier %></a>
     <% else %>
-     <span class="issue-id"><%= @identifier %></span>
+      <span class="issue-id"><%= @identifier %></span>
     <% end %>
-    """
-  end
-
-  attr(:entry, :map, required: true)
-
-  defp human_review_badge(assigns) do
-    ~H"""
-    <span :if={Map.get(@entry, :human_review_required)} class="human-review-badge">
-      Human review
-    </span>
     """
   end
 
@@ -987,7 +579,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     cond do
       String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
-      String.contains?(normalized, ["blocked", "error", "failed", "human_review"]) -> "#{base} state-badge-danger"
+      String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
       String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
       true -> base
     end

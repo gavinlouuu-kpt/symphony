@@ -51,7 +51,6 @@ defmodule SymphonyElixir.Config.Schema do
       field(:project_slug, :string)
       field(:assignee, :string)
       field(:required_labels, {:array, :string}, default: [])
-      field(:human_review_label, :string, default: "symphony:human-review")
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -61,35 +60,15 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [
-          :kind,
-          :endpoint,
-          :api_key,
-          :project_slug,
-          :assignee,
-          :required_labels,
-          :human_review_label,
-          :active_states,
-          :terminal_states
-        ],
+        [:kind, :endpoint, :api_key, :project_slug, :assignee, :required_labels, :active_states, :terminal_states],
         empty_values: []
       )
-      |> update_change(:human_review_label, &normalize_optional_label/1)
       |> update_change(:required_labels, fn labels ->
         labels
         |> Enum.map(&(String.trim(&1) |> String.downcase()))
         |> Enum.uniq()
       end)
     end
-
-    defp normalize_optional_label(label) when is_binary(label) do
-      case String.trim(label) do
-        "" -> nil
-        trimmed -> String.downcase(trimmed)
-      end
-    end
-
-    defp normalize_optional_label(label), do: label
   end
 
   defmodule Polling do
@@ -172,7 +151,6 @@ defmodule SymphonyElixir.Config.Schema do
       field(:vnc_port_start, :integer, default: 15_900)
       field(:novnc_port_start, :integer, default: 16_900)
       field(:api_port_start, :integer, default: 18_000)
-      field(:gpu, :string, default: "none")
       field(:env, :map, default: %{})
       field(:volumes, {:array, :string}, default: [])
       field(:docker_args, {:array, :string}, default: [])
@@ -201,7 +179,6 @@ defmodule SymphonyElixir.Config.Schema do
           :vnc_port_start,
           :novnc_port_start,
           :api_port_start,
-          :gpu,
           :env,
           :volumes,
           :docker_args
@@ -215,7 +192,6 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_port(:vnc_port_start)
       |> validate_port(:novnc_port_start)
       |> validate_port(:api_port_start)
-      |> validate_inclusion(:gpu, ["none", "all"])
     end
 
     defp validate_port(changeset, field) do
@@ -303,65 +279,6 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  defmodule Container do
-    @moduledoc false
-    use Ecto.Schema
-    import Ecto.Changeset
-
-    @primary_key false
-    embedded_schema do
-      field(:enabled, :boolean, default: false)
-      field(:engine, :string, default: "docker")
-      field(:image, :string, default: "symphony-agent-desktop:latest")
-      field(:name_prefix, :string, default: "symphony-agent-")
-      field(:workspace_mount, :string, default: "/workspace")
-      field(:novnc_container_port, :integer, default: 6080)
-      field(:novnc_host, :string, default: "127.0.0.1")
-      field(:novnc_advertise_host, :string)
-      field(:codex_auth_file, :string, default: "~/.codex/auth.json")
-      field(:codex_auth_container_path, :string, default: "/root/.codex/auth.json")
-      field(:extra_run_args, {:array, :string}, default: [])
-      field(:features, {:array, :string}, default: ["auto"])
-      field(:keep_pr_desktops, :boolean, default: true)
-      field(:record, :boolean, default: false)
-      field(:recordings_dir, :string, default: ".symphony/recordings")
-      field(:record_framerate, :integer, default: 10)
-      field(:record_segment_seconds, :integer, default: 60)
-    end
-
-    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
-    def changeset(schema, attrs) do
-      schema
-      |> cast(
-        attrs,
-        [
-          :enabled,
-          :engine,
-          :image,
-          :name_prefix,
-          :workspace_mount,
-          :novnc_container_port,
-          :novnc_host,
-          :novnc_advertise_host,
-          :codex_auth_file,
-          :codex_auth_container_path,
-          :extra_run_args,
-          :features,
-          :keep_pr_desktops,
-          :record,
-          :recordings_dir,
-          :record_framerate,
-          :record_segment_seconds
-        ],
-        empty_values: []
-      )
-      |> validate_inclusion(:engine, ["docker", "podman"])
-      |> validate_number(:novnc_container_port, greater_than: 0)
-      |> validate_number(:record_framerate, greater_than: 0)
-      |> validate_number(:record_segment_seconds, greater_than: 0)
-    end
-  end
-
   defmodule Hooks do
     @moduledoc false
     use Ecto.Schema
@@ -432,7 +349,6 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:cua, Cua, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
-    embeds_one(:container, Container, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -526,7 +442,6 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:cua, with: &Cua.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
-    |> cast_embed(:container, with: &Container.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)

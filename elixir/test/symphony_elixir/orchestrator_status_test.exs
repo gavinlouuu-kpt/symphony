@@ -102,94 +102,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }
   end
 
-  test "orchestrator captures agent message deltas for blocked handoff classification" do
-    issue_id = "issue-streamed-blocker"
-    ref = make_ref()
-
-    issue = %Issue{
-      id: issue_id,
-      identifier: "MT-STREAM-BLOCK",
-      title: "Streamed blocker test",
-      description: "Capture streamed agent text",
-      state: "Rework",
-      url: "https://example.org/issues/MT-STREAM-BLOCK"
-    }
-
-    orchestrator_name = Module.concat(__MODULE__, :StreamedBlockedHandoffOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
-
-    on_exit(fn ->
-      if Process.alive?(pid) do
-        Process.exit(pid, :normal)
-      end
-    end)
-
-    initial_state = :sys.get_state(pid)
-    started_at = DateTime.utc_now()
-
-    running_entry = %{
-      pid: self(),
-      ref: ref,
-      identifier: issue.identifier,
-      issue: issue,
-      phase: :builder,
-      session_id: nil,
-      turn_count: 0,
-      last_codex_message: nil,
-      last_codex_timestamp: nil,
-      last_codex_event: nil,
-      started_at: started_at
-    }
-
-    :sys.replace_state(pid, fn _ ->
-      initial_state
-      |> Map.put(:running, %{issue_id => running_entry})
-      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
-    end)
-
-    now = DateTime.utc_now()
-
-    send(
-      pid,
-      {:codex_worker_update, issue_id,
-       %{
-         event: :notification,
-         payload: %{
-           "method" => "codex/event/agent_message_delta",
-           "params" => %{
-             "msg" => %{
-               "payload" => %{
-                 "delta" => "Exit remains `Blocked`; validation is waiting on KIN-95 provisioning."
-               }
-             }
-           }
-         },
-         timestamp: now
-       }}
-    )
-
-    send(
-      pid,
-      {:codex_worker_update, issue_id,
-       %{
-         event: :turn_completed,
-         payload: %{"method" => "turn/completed"},
-         timestamp: now
-       }}
-    )
-
-    send(pid, {:DOWN, ref, :process, self(), :normal})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
-
-    refute Map.has_key?(state.blocked, issue_id)
-    assert %{error: error, phase: :reviewer, labels: labels, review_note: review_note} = state.retry_attempts[issue_id]
-    assert error =~ "KIN-95 provisioning"
-    assert labels == []
-    assert review_note =~ "GPU availability"
-    assert review_note =~ "make it available to the retained CUA container"
-  end
-
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do
     issue_id = "issue-usage-snapshot"
 
@@ -1141,7 +1053,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              Orchestrator.snapshot(orchestrator_name, 1_000)
   end
 
-  test "orchestrator routes failed builder workers to reviewer after app-server reports input required" do
+  test "orchestrator blocks failed workers after app-server reports input required" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
 
     issue_id = "issue-input-required"
@@ -1185,21 +1097,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = :sys.get_state(pid)
 
     refute Map.has_key?(state.running, issue_id)
-    refute Map.has_key?(state.blocked, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
     assert MapSet.member?(state.claimed, issue_id)
 
     assert %{
              identifier: "MT-INPUT",
-             error: "codex turn requires operator input",
-             phase: :reviewer,
-             review_note: review_note
-           } = state.retry_attempts[issue_id]
-
-    assert review_note =~ "requires facilitation"
-    assert review_note =~ "Escalate to human review only if"
+             error: "codex turn requires operator input"
+           } = state.blocked[issue_id]
   end
 
-  test "orchestrator routes normal builder exits after input required completion to reviewer" do
+  test "orchestrator blocks normal worker exits after input required completion" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
 
     issue_id = "issue-input-required-normal"
@@ -1239,19 +1146,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = :sys.get_state(pid)
 
     refute Map.has_key?(state.running, issue_id)
-    refute Map.has_key?(state.blocked, issue_id)
-    assert MapSet.member?(state.completed, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    refute MapSet.member?(state.completed, issue_id)
     assert MapSet.member?(state.claimed, issue_id)
 
     assert %{
              identifier: "MT-INPUT-NORMAL",
-             error: "codex turn requires operator input",
-             phase: :reviewer,
-             review_note: review_note
-           } = state.retry_attempts[issue_id]
-
-    assert review_note =~ "requires facilitation"
-    assert review_note =~ "Escalate to human review only if"
+             error: "codex turn requires operator input"
+           } = state.blocked[issue_id]
   end
 
   test "status dashboard renders offline marker to terminal" do
@@ -1694,63 +1596,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       assert humanized =~ expected_fragment
     end)
-  end
-
-  test "status dashboard surfaces codex stream/transport error messages" do
-    stream_error = %{
-      event: :notification,
-      message: %{
-        "method" => "codex/event/error",
-        "params" => %{
-          "msg" => %{
-            "type" => "error",
-            "message" => "stream disconnected before completion: retrying sampling request"
-          }
-        }
-      }
-    }
-
-    typed_stream_error = %{
-      event: :notification,
-      message: %{
-        "method" => "codex/event/stream_error",
-        "params" => %{
-          "msg" => %{
-            "type" => "stream_error",
-            "message" => "stream disconnected - retrying sampling request"
-          }
-        }
-      }
-    }
-
-    nested_error = %{
-      event: :notification,
-      message: %{
-        "method" => "error",
-        "params" => %{"error" => %{"message" => "request timed out connecting to backend"}}
-      }
-    }
-
-    assert StatusDashboard.humanize_codex_message(stream_error) =~
-             "error: stream disconnected before completion: retrying sampling request"
-
-    assert StatusDashboard.humanize_codex_message(typed_stream_error) =~
-             "stream error: stream disconnected - retrying sampling request"
-
-    assert StatusDashboard.humanize_codex_message(nested_error) =~
-             "error: request timed out connecting to backend"
-  end
-
-  test "status dashboard falls back to label when codex error carries no message" do
-    bare_error = %{
-      event: :notification,
-      message: %{
-        "method" => "codex/event/error",
-        "params" => %{"msg" => %{"type" => "error"}}
-      }
-    }
-
-    assert StatusDashboard.humanize_codex_message(bare_error) == "error"
   end
 
   test "status dashboard humanizes dynamic tool wrapper events" do

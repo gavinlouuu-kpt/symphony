@@ -98,7 +98,6 @@ defmodule SymphonyElixir.TestSupport do
           tracker_project_slug: "project",
           tracker_assignee: nil,
           tracker_required_labels: [],
-          tracker_human_review_label: "symphony:human-review",
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
@@ -124,7 +123,6 @@ defmodule SymphonyElixir.TestSupport do
           cua_vnc_port_start: 15_900,
           cua_novnc_port_start: 16_900,
           cua_api_port_start: 18_000,
-          cua_gpu: "none",
           cua_env: %{},
           cua_volumes: [],
           cua_docker_args: [],
@@ -139,23 +137,6 @@ defmodule SymphonyElixir.TestSupport do
           codex_turn_timeout_ms: 3_600_000,
           codex_read_timeout_ms: 5_000,
           codex_stall_timeout_ms: 300_000,
-          container_enabled: nil,
-          container_engine: nil,
-          container_image: nil,
-          container_name_prefix: nil,
-          container_workspace_mount: nil,
-          container_novnc_container_port: nil,
-          container_novnc_host: nil,
-          container_novnc_advertise_host: nil,
-          container_codex_auth_file: nil,
-          container_codex_auth_container_path: nil,
-          container_extra_run_args: nil,
-          container_features: nil,
-          container_keep_pr_desktops: nil,
-          container_record: nil,
-          container_recordings_dir: nil,
-          container_record_framerate: nil,
-          container_record_segment_seconds: nil,
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -177,7 +158,6 @@ defmodule SymphonyElixir.TestSupport do
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
     tracker_required_labels = Keyword.get(config, :tracker_required_labels)
-    tracker_human_review_label = Keyword.get(config, :tracker_human_review_label)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
@@ -203,7 +183,6 @@ defmodule SymphonyElixir.TestSupport do
     cua_vnc_port_start = Keyword.get(config, :cua_vnc_port_start)
     cua_novnc_port_start = Keyword.get(config, :cua_novnc_port_start)
     cua_api_port_start = Keyword.get(config, :cua_api_port_start)
-    cua_gpu = Keyword.get(config, :cua_gpu)
     cua_env = Keyword.get(config, :cua_env)
     cua_volumes = Keyword.get(config, :cua_volumes)
     cua_docker_args = Keyword.get(config, :cua_docker_args)
@@ -218,28 +197,6 @@ defmodule SymphonyElixir.TestSupport do
     codex_turn_timeout_ms = Keyword.get(config, :codex_turn_timeout_ms)
     codex_read_timeout_ms = Keyword.get(config, :codex_read_timeout_ms)
     codex_stall_timeout_ms = Keyword.get(config, :codex_stall_timeout_ms)
-
-    container_settings =
-      Keyword.take(config, [
-        :container_enabled,
-        :container_engine,
-        :container_image,
-        :container_name_prefix,
-        :container_workspace_mount,
-        :container_novnc_container_port,
-        :container_novnc_host,
-        :container_novnc_advertise_host,
-        :container_codex_auth_file,
-        :container_codex_auth_container_path,
-        :container_extra_run_args,
-        :container_features,
-        :container_keep_pr_desktops,
-        :container_record,
-        :container_recordings_dir,
-        :container_record_framerate,
-        :container_record_segment_seconds
-      ])
-
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -262,7 +219,6 @@ defmodule SymphonyElixir.TestSupport do
         "  project_slug: #{yaml_value(tracker_project_slug)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
         "  required_labels: #{yaml_value(tracker_required_labels)}",
-        "  human_review_label: #{yaml_value(tracker_human_review_label)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
         "polling:",
@@ -288,7 +244,6 @@ defmodule SymphonyElixir.TestSupport do
           cua_vnc_port_start,
           cua_novnc_port_start,
           cua_api_port_start,
-          cua_gpu,
           cua_env,
           cua_volumes,
           cua_docker_args
@@ -306,7 +261,6 @@ defmodule SymphonyElixir.TestSupport do
         "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
-        container_yaml(container_settings),
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
@@ -355,21 +309,6 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.join("\n")
   end
 
-  defp container_yaml(container_settings) do
-    entries =
-      container_settings
-      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Enum.map(fn {key, value} ->
-        field = key |> Atom.to_string() |> String.replace_prefix("container_", "")
-        "  #{field}: #{yaml_value(value)}"
-      end)
-
-    case entries do
-      [] -> nil
-      entries -> Enum.join(["container:" | entries], "\n")
-    end
-  end
-
   defp worker_yaml(provider, ssh_hosts, ssh_options, max_concurrent_agents_per_host)
        when provider in [nil, "ssh"] and ssh_hosts in [nil, []] and ssh_options in [nil, []] and
               is_nil(max_concurrent_agents_per_host),
@@ -406,7 +345,6 @@ defmodule SymphonyElixir.TestSupport do
          15_900,
          16_900,
          18_000,
-         "none",
          env,
          volumes,
          docker_args
@@ -432,7 +370,6 @@ defmodule SymphonyElixir.TestSupport do
          vnc_port_start,
          novnc_port_start,
          api_port_start,
-         gpu,
          env,
          volumes,
          docker_args
@@ -456,7 +393,6 @@ defmodule SymphonyElixir.TestSupport do
       "  vnc_port_start: #{yaml_value(vnc_port_start)}",
       "  novnc_port_start: #{yaml_value(novnc_port_start)}",
       "  api_port_start: #{yaml_value(api_port_start)}",
-      "  gpu: #{yaml_value(gpu)}",
       "  env: #{yaml_value(env || %{})}",
       "  volumes: #{yaml_value(volumes || [])}",
       "  docker_args: #{yaml_value(docker_args || [])}"

@@ -3,11 +3,9 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, EventLog, Orchestrator, StatusDashboard, Tracker}
+  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
   alias SymphonyElixir.Cua.Sandbox, as: CuaSandbox
   alias SymphonyElixirWeb.Evidence
-
-  @recent_events_limit 25
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -22,7 +20,6 @@ defmodule SymphonyElixirWeb.Presenter do
             retrying: length(snapshot.retrying),
             blocked: length(Map.get(snapshot, :blocked, []))
           },
-          project: project_payload(),
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
@@ -89,114 +86,14 @@ defmodule SymphonyElixirWeb.Presenter do
       logs: %{
         codex_session_logs: []
       },
-      recent_events: recent_events_payload(issue_identifier, running || blocked),
+      recent_events: recent_events_payload(running || blocked),
       last_error: (blocked && blocked.error) || (retry && retry.error),
       tracked: %{}
     }
   end
 
-  @doc """
-  Full transcript of recorded events for an issue, oldest first.
-  """
-  @spec events_payload(String.t()) :: [map()]
-  def events_payload(issue_identifier) when is_binary(issue_identifier) do
-    issue_identifier
-    |> EventLog.list()
-    |> Enum.map(&event_payload/1)
-  end
-
   defp issue_id_from_entries(running, retry, blocked),
     do: (running && running.issue_id) || (retry && retry.issue_id) || (blocked && blocked.issue_id)
-
-  defp project_payload do
-    settings = Config.settings!()
-    project_slug = settings.tracker.project_slug
-
-    source_repo_url =
-      "SYMPHONY_SOURCE_REPO_URL"
-      |> env_value()
-      |> redact_url_userinfo()
-
-    %{
-      instance_id: env_value("SYMPHONY_INSTANCE_ID"),
-      instance_root: env_value("SYMPHONY_INSTANCE_ROOT"),
-      tracker_kind: settings.tracker.kind,
-      project_slug: project_slug,
-      project_url: project_url(project_slug),
-      source_repo_url: source_repo_url,
-      source_repo_branch: env_value("SYMPHONY_SOURCE_REPO_BRANCH"),
-      workspace_root: settings.workspace.root,
-      worker_provider: settings.worker.provider,
-      cua_host: settings.cua.host,
-      dashboard_host: settings.server.host,
-      dashboard_port: Config.server_port(),
-      tailserve_url: tailserve_url()
-    }
-    |> Enum.reject(fn {_key, value} -> blank?(value) end)
-    |> Map.new()
-  end
-
-  defp env_value(name) when is_binary(name) do
-    name
-    |> System.get_env()
-    |> normalize_optional_string()
-  end
-
-  defp tailserve_url do
-    case env_value("SYMPHONY_TAILSERVE_URL") || runtime_tailserve_url() do
-      value when is_binary(value) and value != "" -> value
-      _ -> nil
-    end
-  end
-
-  defp runtime_tailserve_url do
-    with instance_root when is_binary(instance_root) <- env_value("SYMPHONY_INSTANCE_ROOT"),
-         {:ok, contents} <- File.read(Path.join([instance_root, "runtime", "tailserve.env"])) do
-      contents
-      |> String.split("\n", trim: true)
-      |> Enum.find_value(fn line ->
-        case String.split(line, "=", parts: 2) do
-          ["SYMPHONY_TAILSERVE_URL", value] -> value |> String.trim("'\"") |> normalize_optional_string()
-          _ -> nil
-        end
-      end)
-    else
-      _ -> nil
-    end
-  end
-
-  defp project_url(project_slug) when is_binary(project_slug) and project_slug != "",
-    do: "https://linear.app/project/#{project_slug}/issues"
-
-  defp project_url(_project_slug), do: nil
-
-  defp redact_url_userinfo(nil), do: nil
-
-  defp redact_url_userinfo(url) when is_binary(url) do
-    uri = URI.parse(url)
-
-    if is_binary(uri.userinfo) do
-      %{uri | userinfo: nil}
-      |> URI.to_string()
-    else
-      url
-    end
-  rescue
-    URI.Error -> url
-  end
-
-  defp normalize_optional_string(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp normalize_optional_string(_value), do: nil
-
-  defp blank?(nil), do: true
-  defp blank?(""), do: true
-  defp blank?(_value), do: false
 
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
@@ -212,7 +109,6 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_identifier: entry.identifier,
       issue_url: Map.get(entry, :issue_url),
       state: entry.state,
-      phase: format_phase(Map.get(entry, :phase)),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       sandbox: sandbox_payload(Map.get(entry, :sandbox)),
@@ -228,8 +124,6 @@ defmodule SymphonyElixirWeb.Presenter do
         total_tokens: entry.codex_total_tokens
       }
     }
-    |> maybe_put_labels(Map.get(entry, :labels, []))
-    |> maybe_put_human_review(Map.get(entry, :labels, []))
   end
 
   defp retry_entry_payload(entry) do
@@ -240,13 +134,10 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
-      phase: format_phase(Map.get(entry, :phase)),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       sandbox: sandbox_payload(Map.get(entry, :sandbox))
     }
-    |> maybe_put_labels(Map.get(entry, :labels, []))
-    |> maybe_put_human_review(Map.get(entry, :labels, []))
   end
 
   defp blocked_entry_payload(entry) do
@@ -256,7 +147,6 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_url: Map.get(entry, :issue_url),
       state: entry.state,
       error: entry.error,
-      phase: format_phase(Map.get(entry, :phase)),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       sandbox: sandbox_payload(Map.get(entry, :sandbox)),
@@ -266,8 +156,6 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(entry.last_codex_message),
       last_event_at: iso8601(entry.last_codex_timestamp)
     }
-    |> maybe_put_labels(Map.get(entry, :labels, []))
-    |> maybe_put_human_review(Map.get(entry, :labels, []), Map.get(entry, :human_review_required, false))
   end
 
   defp running_issue_payload(running) do
@@ -277,7 +165,6 @@ defmodule SymphonyElixirWeb.Presenter do
       sandbox: sandbox_payload(Map.get(running, :sandbox)),
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
-      phase: format_phase(Map.get(running, :phase)),
       state: running.state,
       started_at: iso8601(running.started_at),
       last_event: running.last_codex_event,
@@ -289,8 +176,6 @@ defmodule SymphonyElixirWeb.Presenter do
         total_tokens: running.codex_total_tokens
       }
     }
-    |> maybe_put_labels(Map.get(running, :labels, []))
-    |> maybe_put_human_review(Map.get(running, :labels, []))
   end
 
   defp retry_issue_payload(retry) do
@@ -298,13 +183,10 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: retry.attempt,
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
-      phase: format_phase(Map.get(retry, :phase)),
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path),
       sandbox: sandbox_payload(Map.get(retry, :sandbox))
     }
-    |> maybe_put_labels(Map.get(retry, :labels, []))
-    |> maybe_put_human_review(Map.get(retry, :labels, []))
   end
 
   defp blocked_issue_payload(blocked) do
@@ -315,14 +197,11 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: blocked.session_id,
       state: blocked.state,
       error: blocked.error,
-      phase: format_phase(Map.get(blocked, :phase)),
       blocked_at: iso8601(blocked.blocked_at),
       last_event: blocked.last_codex_event,
       last_message: summarize_message(blocked.last_codex_message),
       last_event_at: iso8601(blocked.last_codex_timestamp)
     }
-    |> maybe_put_labels(Map.get(blocked, :labels, []))
-    |> maybe_put_human_review(Map.get(blocked, :labels, []), Map.get(blocked, :human_review_required, false))
   end
 
   defp workspace_path(issue_identifier, running, retry, blocked) do
@@ -367,21 +246,12 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp sandbox_payload(_sandbox), do: nil
 
-  defp format_phase(:reviewer), do: "reviewer"
-  defp format_phase("reviewer"), do: "reviewer"
-  defp format_phase(:builder), do: "builder"
-  defp format_phase("builder"), do: "builder"
-  defp format_phase(_phase), do: "builder"
-
   defp sandbox_inventory(snapshot) do
-    retained = CuaSandbox.list_live()
-    retained_issues = retained_issue_lookup(retained)
-
     []
     |> Kernel.++(Enum.map(snapshot.running, &sandbox_inventory_entry(&1, "running")))
     |> Kernel.++(Enum.map(snapshot.retrying, &sandbox_inventory_entry(&1, "retrying")))
     |> Kernel.++(Enum.map(Map.get(snapshot, :blocked, []), &sandbox_inventory_entry(&1, "blocked")))
-    |> Kernel.++(Enum.map(retained, &retained_sandbox_inventory_entry(&1, retained_issues)))
+    |> Kernel.++(Enum.map(CuaSandbox.list_live(), &retained_sandbox_inventory_entry/1))
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq_by(fn entry ->
       entry.sandbox[:name] || entry.sandbox["name"] || {entry.issue_id, entry.issue_status}
@@ -394,45 +264,34 @@ defmodule SymphonyElixirWeb.Presenter do
         nil
 
       sandbox ->
-        labels = Map.get(entry, :labels, [])
-        human_review_required = Map.get(entry, :human_review_required, false)
-
         %{
           issue_id: Map.get(entry, :issue_id),
           issue_identifier: Map.get(entry, :identifier),
           issue_url: Map.get(entry, :issue_url),
-          issue_status: human_review_issue_status(issue_status, labels, human_review_required),
+          issue_status: issue_status,
           worker_host: Map.get(entry, :worker_host),
           workspace_path: Map.get(entry, :workspace_path),
           sandbox: sandbox
         }
-        |> maybe_put_labels(labels)
-        |> maybe_put_human_review(labels, human_review_required)
         |> maybe_put_evidence(Map.get(entry, :identifier))
     end
   end
 
-  defp retained_sandbox_inventory_entry(entry, issue_lookup) when is_map(entry) do
+  defp retained_sandbox_inventory_entry(entry) when is_map(entry) do
     case sandbox_payload(Map.get(entry, :sandbox)) do
       nil ->
         nil
 
       sandbox ->
-        issue = retained_issue_for_entry(issue_lookup, entry)
-        labels = issue_labels(issue)
-
         %{
           issue_id: Map.get(entry, :issue_id),
           issue_identifier: Map.get(entry, :issue_identifier),
-          issue_url: issue_url(issue) || Map.get(entry, :issue_url),
-          issue_state: issue_state(issue),
-          issue_status: human_review_issue_status(retained_issue_status(issue, entry), labels),
+          issue_url: Map.get(entry, :issue_url),
+          issue_status: Map.get(entry, :issue_status) || "retained",
           worker_host: Map.get(entry, :worker_host),
           workspace_path: Map.get(entry, :workspace_path),
           sandbox: sandbox
         }
-        |> maybe_put_labels(labels)
-        |> maybe_put_human_review(labels)
         |> maybe_put_evidence(Map.get(entry, :issue_identifier))
     end
   end
@@ -444,120 +303,9 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp retained_issue_lookup(retained_entries) when is_list(retained_entries) do
-    ids =
-      retained_entries
-      |> Enum.map(&Map.get(&1, :issue_id))
-      |> Enum.filter(&is_binary/1)
-      |> Enum.uniq()
+  defp recent_events_payload(nil), do: []
 
-    case ids do
-      [] ->
-        %{}
-
-      ids ->
-        case Tracker.fetch_issue_states_by_ids(ids) do
-          {:ok, issues} ->
-            Map.new(issues, fn issue -> {Map.get(issue, :id), issue} end)
-
-          {:error, _reason} ->
-            %{}
-        end
-    end
-  end
-
-  defp retained_issue_for_entry(issue_lookup, entry) when is_map(issue_lookup) and is_map(entry) do
-    Map.get(issue_lookup, Map.get(entry, :issue_id))
-  end
-
-  defp issue_labels(%{labels: labels}) when is_list(labels), do: labels
-  defp issue_labels(_issue), do: []
-
-  defp issue_url(%{url: url}) when is_binary(url), do: url
-  defp issue_url(_issue), do: nil
-
-  defp issue_state(%{state: state}) when is_binary(state), do: state
-  defp issue_state(_issue), do: nil
-
-  defp retained_issue_status(%{state: state}, _entry) when is_binary(state), do: state
-  defp retained_issue_status(_issue, entry), do: Map.get(entry, :issue_status) || "retained"
-
-  defp human_review_issue_status(issue_status, labels, forced \\ false) do
-    if forced or human_review_label?(labels) do
-      "human_review"
-    else
-      issue_status
-    end
-  end
-
-  defp labels_payload(labels) when is_list(labels) do
-    labels =
-      labels
-      |> Enum.filter(&is_binary/1)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
-
-    case labels do
-      [] -> nil
-      labels -> labels
-    end
-  end
-
-  defp labels_payload(_labels), do: nil
-
-  defp maybe_put_labels(payload, labels) when is_map(payload) do
-    case labels_payload(labels) do
-      nil -> payload
-      payload_labels -> Map.put(payload, :labels, payload_labels)
-    end
-  end
-
-  defp maybe_put_human_review(payload, labels, forced \\ false) when is_map(payload) do
-    if forced or human_review_label?(labels) do
-      Map.put(payload, :human_review_required, true)
-    else
-      payload
-    end
-  end
-
-  defp human_review_label?(labels) when is_list(labels) do
-    case human_review_label() do
-      nil -> false
-      label -> Enum.any?(labels, &(normalize_label(&1) == label))
-    end
-  end
-
-  defp human_review_label?(_labels), do: false
-
-  defp human_review_label do
-    case Config.settings!().tracker.human_review_label do
-      label when is_binary(label) ->
-        label
-        |> String.trim()
-        |> String.downcase()
-        |> case do
-          "" -> nil
-          normalized -> normalized
-        end
-
-      _ ->
-        nil
-    end
-  end
-
-  defp normalize_label(label) when is_binary(label), do: label |> String.trim() |> String.downcase()
-  defp normalize_label(_label), do: ""
-
-  defp recent_events_payload(issue_identifier, entry) do
-    case EventLog.list(issue_identifier, limit: @recent_events_limit) do
-      [] -> fallback_recent_events(entry)
-      events -> Enum.map(events, &event_payload/1)
-    end
-  end
-
-  defp fallback_recent_events(nil), do: []
-
-  defp fallback_recent_events(entry) do
+  defp recent_events_payload(entry) do
     [
       %{
         at: iso8601(entry.last_codex_timestamp),
@@ -566,16 +314,6 @@ defmodule SymphonyElixirWeb.Presenter do
       }
     ]
     |> Enum.reject(&is_nil(&1.at))
-  end
-
-  defp event_payload(event) do
-    %{
-      seq: event.seq,
-      at: event.at,
-      event: event.event,
-      message: event.message,
-      session_id: event.session_id
-    }
   end
 
   defp summarize_message(nil), do: nil

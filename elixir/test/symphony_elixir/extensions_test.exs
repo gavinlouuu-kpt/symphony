@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SymphonyElixir.{IssueIntake, Linear.Adapter}
+  alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -36,19 +36,6 @@ defmodule SymphonyElixir.ExtensionsTest do
         _ ->
           Process.get({__MODULE__, :graphql_result})
       end
-    end
-  end
-
-  defmodule IssueIntakeLinearClient do
-    def graphql(query, variables) do
-      test_pid = Application.fetch_env!(:symphony_elixir, :issue_intake_test_pid)
-      results = Application.fetch_env!(:symphony_elixir, :issue_intake_test_results)
-      send(test_pid, {:issue_intake_graphql, query, variables})
-
-      Agent.get_and_update(results, fn
-        [result | rest] -> {result, rest}
-        [] -> {{:error, :unexpected_graphql}, []}
-      end)
     end
   end
 
@@ -87,11 +74,6 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
-    end
-
-    def handle_call({:review_console_message, request}, _from, state) do
-      reply = Keyword.get(state, :console, %{role: "orchestrator", body: "console ok"})
-      {:reply, {:ok, Map.put(reply, :request, request)}, state}
     end
   end
 
@@ -212,15 +194,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
-    assert :ok = SymphonyElixir.Tracker.add_issue_label("issue-1", "Human Review")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
-    assert_receive {:memory_tracker_label_add, "issue-1", "Human Review"}
 
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
     assert :ok = Memory.create_comment("issue-1", "quiet")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
-    assert :ok = Memory.add_issue_label("issue-1", "quiet")
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
@@ -340,48 +319,6 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
   end
 
-  test "linear adapter creates and adds issue labels without replacing existing labels" do
-    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
-
-    Process.put(
-      {FakeLinearClient, :graphql_results},
-      [
-        {:ok,
-         %{
-           "data" => %{
-             "issue" => %{
-               "team" => %{
-                 "id" => "team-1",
-                 "labels" => %{"nodes" => []}
-               }
-             }
-           }
-         }},
-        {:ok,
-         %{
-           "data" => %{
-             "issueLabelCreate" => %{
-               "success" => true,
-               "issueLabel" => %{"id" => "label-human-review"}
-             }
-           }
-         }},
-        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
-      ]
-    )
-
-    assert :ok = Adapter.add_issue_label("issue-1", "symphony:human-review")
-
-    assert_receive {:graphql_called, label_lookup_query, %{issueId: "issue-1", labelName: "symphony:human-review"}}
-    assert label_lookup_query =~ "labels"
-
-    assert_receive {:graphql_called, create_label_query, %{teamId: "team-1", labelName: "symphony:human-review"}}
-    assert create_label_query =~ "issueLabelCreate"
-
-    assert_receive {:graphql_called, add_label_query, %{issueId: "issue-1", labelId: "label-human-review"}}
-    assert add_label_query =~ "addedLabelIds"
-  end
-
   test "phoenix observability api preserves state, issue, and refresh responses" do
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)
@@ -406,22 +343,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
              "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
-             "project" => %{
-               "tracker_kind" => "linear",
-               "project_slug" => "project",
-               "project_url" => "https://linear.app/project/project/issues",
-               "workspace_root" => Config.settings!().workspace.root,
-               "worker_provider" => "ssh",
-               "cua_host" => "127.0.0.1",
-               "dashboard_host" => "127.0.0.1"
-             },
              "running" => [
                %{
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "issue_url" => "https://example.org/issues/MT-HTTP",
                  "state" => "In Progress",
-                 "phase" => "builder",
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "sandbox" => nil,
@@ -442,7 +369,6 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "attempt" => 2,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
-                 "phase" => "builder",
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "sandbox" => nil
@@ -455,7 +381,6 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_url" => "https://example.org/issues/MT-BLOCKED",
                  "state" => "In Progress",
                  "error" => "codex turn requires operator input",
-                 "phase" => "builder",
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "sandbox" => %{
@@ -531,7 +456,6 @@ defmodule SymphonyElixir.ExtensionsTest do
                "sandbox" => nil,
                "session_id" => "thread-http",
                "turn_count" => 7,
-               "phase" => "builder",
                "state" => "In Progress",
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",
@@ -574,23 +498,6 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{"queued" => true, "coalesced" => false, "operations" => ["poll", "reconcile"]} =
              json_response(conn, 202)
-
-    conn =
-      post(build_conn(), "/api/v1/console", %{
-        "target" => "reviewer",
-        "issue_identifier" => "MT-HTTP",
-        "body" => "review this"
-      })
-
-    assert %{
-             "role" => "orchestrator",
-             "body" => "console ok",
-             "request" => %{
-               "target" => "reviewer",
-               "issue_identifier" => "MT-HTTP",
-               "body" => "review this"
-             }
-           } = json_response(conn, 202)
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -601,9 +508,6 @@ defmodule SymphonyElixir.ExtensionsTest do
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(get(build_conn(), "/api/v1/refresh"), 405) ==
-             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
-
-    assert json_response(get(build_conn(), "/api/v1/console"), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(post(build_conn(), "/", %{}), 405) ==
@@ -624,14 +528,6 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
 
     assert json_response(post(build_conn(), "/api/v1/refresh", %{}), 503) ==
-             %{
-               "error" => %{
-                 "code" => "orchestrator_unavailable",
-                 "message" => "Orchestrator is unavailable"
-               }
-             }
-
-    assert json_response(post(build_conn(), "/api/v1/console", %{}), 503) ==
              %{
                "error" => %{
                  "code" => "orchestrator_unavailable",
@@ -725,15 +621,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "project Dashboard"
-    assert html =~ "Workspace root"
-    assert html =~ "https://linear.app/project/project/issues"
-    assert html =~ "Review console"
-    assert html =~ "Private issue-scoped messages"
-    assert html =~ "Create issue"
-    assert html =~ ~s(href="/issues/new")
-    assert html =~ "Orchestrator"
-    assert html =~ "Reviewer"
+    assert html =~ "Operations Dashboard"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
@@ -802,180 +690,6 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
 
     refute render(view) =~ "javascript:alert"
-  end
-
-  test "issue creator liveview renders project context and intake controls" do
-    orchestrator_name = Module.concat(__MODULE__, :IssueCreatorOrchestrator)
-
-    {:ok, _pid} =
-      StaticOrchestrator.start_link(
-        name: orchestrator_name,
-        snapshot: static_snapshot()
-      )
-
-    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
-
-    {:ok, _view, html} = live(build_conn(), "/issues/new")
-
-    assert html =~ "Issue Creator"
-    assert html =~ "Scan and Draft"
-    assert html =~ "New request"
-    assert html =~ "project"
-    assert html =~ ~s(href="/")
-  end
-
-  test "issue intake creates a Linear issue from the reviewed draft" do
-    ensure_issue_intake_running()
-    previous_state = :sys.get_state(IssueIntake)
-    previous_results = Application.get_env(:symphony_elixir, :issue_intake_test_results)
-    previous_test_pid = Application.get_env(:symphony_elixir, :issue_intake_test_pid)
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
-
-    {:ok, results} =
-      Agent.start_link(fn ->
-        [
-          {:ok,
-           %{
-             "data" => %{
-               "projects" => %{
-                 "nodes" => [
-                   %{
-                     "id" => "project-1",
-                     "name" => "Project",
-                     "teams" => %{
-                       "nodes" => [
-                         %{
-                           "id" => "team-1",
-                           "key" => "KIN",
-                           "states" => %{
-                             "nodes" => [
-                               %{"id" => "state-todo", "name" => "Todo"},
-                               %{"id" => "state-review", "name" => "In Review"}
-                             ]
-                           }
-                         }
-                       ]
-                     }
-                   }
-                 ]
-               }
-             }
-           }},
-          {:ok,
-           %{
-             "data" => %{
-               "issueCreate" => %{
-                 "success" => true,
-                 "issue" => %{
-                   "id" => "issue-101",
-                   "identifier" => "KIN-101",
-                   "title" => "Add intake workflow",
-                   "url" => "https://linear.app/kingsphase/issue/KIN-101/add-intake-workflow",
-                   "state" => %{"name" => "Todo"}
-                 }
-               }
-             }
-           }}
-        ]
-      end)
-
-    Application.put_env(:symphony_elixir, :linear_client_module, IssueIntakeLinearClient)
-    Application.put_env(:symphony_elixir, :issue_intake_test_results, results)
-    Application.put_env(:symphony_elixir, :issue_intake_test_pid, self())
-
-    on_exit(fn ->
-      :sys.replace_state(IssueIntake, fn _state -> previous_state end)
-
-      if is_nil(previous_results) do
-        Application.delete_env(:symphony_elixir, :issue_intake_test_results)
-      else
-        Application.put_env(:symphony_elixir, :issue_intake_test_results, previous_results)
-      end
-
-      if is_nil(previous_test_pid) do
-        Application.delete_env(:symphony_elixir, :issue_intake_test_pid)
-      else
-        Application.put_env(:symphony_elixir, :issue_intake_test_pid, previous_test_pid)
-      end
-
-      if Process.alive?(results), do: Agent.stop(results)
-    end)
-
-    session = %{
-      id: 1,
-      kind: "feature",
-      title: "Add intake workflow",
-      original_request: "Create a planning page.",
-      status: "drafting",
-      messages: [%{role: "user", body: "Create a planning page.", created_at: now}],
-      scan: %{repo_url: "repo", branch: "main", file_count: 2, top_level: [], languages: [], important_files: [], test_hints: []},
-      draft: "Reviewed task draft",
-      created_issue: nil,
-      created_at: now,
-      updated_at: now
-    }
-
-    :sys.replace_state(IssueIntake, fn _state -> %IssueIntake{sessions: [session], next_id: 2} end)
-
-    assert {:ok, updated} = IssueIntake.create_linear_issue(1)
-    assert updated.created_issue.identifier == "KIN-101"
-    assert updated.created_issue.state == "Todo"
-
-    assert_receive {:issue_intake_graphql, project_query, %{projectSlug: "project"}}
-    assert project_query =~ "SymphonyIssueIntakeProject"
-
-    assert_receive {:issue_intake_graphql, create_query, create_variables}
-    assert create_query =~ "SymphonyIssueIntakeCreateIssue"
-    assert create_variables.title == "Add intake workflow"
-    assert create_variables.description == "Reviewed task draft"
-    assert create_variables.stateId == "state-todo"
-  end
-
-  test "review console answers retained sandbox questions with dashboard context" do
-    orchestrator_name = Module.concat(__MODULE__, :RetainedConsoleOrchestrator)
-
-    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: %{}, console: %{role: "reviewer", body: "Queued retained reviewer from dashboard"}})
-
-    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
-
-    payload = %{
-      running: [],
-      retrying: [],
-      blocked: [],
-      sandboxes: [
-        %{
-          issue_identifier: "KIN-94",
-          issue_status: "human_review",
-          workspace_path: "/home/cua/workspaces/KIN-94",
-          sandbox: %{novnc_url: "http://100.81.210.49:17678/"},
-          evidence: [
-            %{kind: "video", filename: "KIN-94-visible-smoke.mp4"},
-            %{kind: "log", filename: "KIN-94-visible-exec.log"}
-          ]
-        }
-      ]
-    }
-
-    assert {"reviewer", reviewer_body} =
-             SymphonyElixirWeb.DashboardLive.console_response_for_test(
-               payload,
-               "KIN-94",
-               "reviewer",
-               "what test has been done?"
-             )
-
-    assert reviewer_body =~ "Queued retained reviewer from dashboard"
-
-    assert {"orchestrator", orchestrator_body} =
-             SymphonyElixirWeb.DashboardLive.console_response_for_test(
-               payload,
-               "KIN-94",
-               "orchestrator",
-               "status"
-             )
-
-    assert orchestrator_body =~ "Workspace: /home/cua/workspaces/KIN-94"
-    assert orchestrator_body =~ "noVNC: http://100.81.210.49:17678/"
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do
@@ -1205,15 +919,6 @@ defmodule SymphonyElixir.ExtensionsTest do
         {:ok, _pid} -> :ok
         {:error, {:already_started, _pid}} -> :ok
       end
-    end
-  end
-
-  defp ensure_issue_intake_running do
-    if Process.whereis(IssueIntake) do
-      :ok
-    else
-      start_supervised!(IssueIntake)
-      :ok
     end
   end
 end

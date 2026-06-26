@@ -128,9 +128,6 @@ bin/build-cua-image.sh
 
 Set `SYMPHONY_CUA_IMAGE_BUILD=never` when using a prebuilt image from a registry.
 
-Set `SYMPHONY_CUA_GPU=all` on instances whose CUA sandboxes need NVIDIA GPU access. Leave it as
-`none` on hosts without NVIDIA Container Toolkit support.
-
 ## Private Repositories
 
 Codex runs on the host, but project commands run inside the CUA sandbox. The default `after_create`
@@ -158,42 +155,6 @@ For demo steps, real-user validation, browser/app startup, or any task where the
 activity in noVNC, the agent should use `sandbox_visible_exec`. It opens a terminal on the CUA desktop,
 runs the command from the issue workspace, records a transcript under `.symphony/visible-exec/`, waits
 for completion, and leaves the terminal open for review.
-
-## Closed-Loop Workflow
-
-The project template treats Symphony as a loop runner, not a one-shot prompt runner. Each issue runs
-as a builder phase followed by a separate reviewer phase. The builder should move through this loop:
-
-```text
-Discover -> Prove -> Patch -> Probe -> Present -> Continue | Rework | Review | Blocked | Done
-```
-
-- `Discover`: inspect the issue, current workspace, affected workflows, acceptance criteria, and edge cases.
-- `Prove`: create a failing test, reproduction script, fixture, or documented manual reproduction when practical.
-- `Patch`: implement the smallest coherent slice that addresses the root cause.
-- `Probe`: run focused validation, regression checks, and `sandbox_visible_exec` for UI/demo/real-user paths.
-- `Present`: update the Linear workpad with checklist status, commands, evidence, risks, and next decision.
-- `Review`: Symphony starts a fresh reviewer Codex session after a normal builder exit. The reviewer
-  inspects the same sandbox and evidence, then moves the issue to `In Review` on pass or `Rework` on
-  failure/blocker.
-
-Recommended Linear state mapping:
-
-```text
-Todo        -> eligible for dispatch
-In Progress -> active builder/reviewer loop
-In Review   -> reviewer passed, agent stopped, sandbox retained, evidence visible
-Rework      -> resume the same issue/sandbox and fix review or validation failures
-Done        -> terminal cleanup may close the sandbox
-```
-
-Keep `In Review` out of `tracker.active_states`. The reviewer phase will move passing issues there,
-and the next orchestrator check will release the active claim while keeping the CUA sandbox visible.
-The dashboard inventories retained CUA containers separately, so review sandboxes can remain visible
-without counting as running agents.
-
-Evidence files placed in `SYMPHONY_EVIDENCE_ROOT` with the issue prefix, for example
-`KIN-94-visible-smoke.mp4`, are linked from the issue's CUA sandbox row in the dashboard.
 
 ## Dashboard
 
@@ -225,35 +186,3 @@ biowork        4401
 mib-studio-qt 4402
 symphony      4403
 ```
-
-## Tailscale Serve
-
-To avoid remembering raw Tailscale IPs and project ports, each instance can publish a stable
-Tailscale Serve service:
-
-```bash
-cd "$ROOT"
-bin/tailserve.sh
-```
-
-By default this exposes:
-
-```text
-https://symphony-<instance-id>.<tailnet>/
-```
-
-and proxies it to the local dashboard port. For example:
-
-```text
-https://symphony-biowork.himalayan-coho.ts.net/
-```
-
-Set `SYMPHONY_TAILSERVE_ENABLED=true` to configure Tailscale Serve automatically whenever
-`bin/start.sh` runs. The script writes the resolved service URL to:
-
-```text
-runtime/tailserve.env
-```
-
-New Tailscale service names may require Tailnet admin approval. Existing approved services can be
-updated in place by rerunning `bin/tailserve.sh`.

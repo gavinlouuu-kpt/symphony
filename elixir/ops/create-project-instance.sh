@@ -58,7 +58,6 @@ replace_in_env() {
 replace_in_env "example-project" "$INSTANCE_ID"
 replace_in_env "/home/gavin/Service/symphony/$INSTANCE_ID" "$INSTANCE_ROOT"
 sed -i "s|^SYMPHONY_DASHBOARD_PORT=.*|SYMPHONY_DASHBOARD_PORT=$DASHBOARD_PORT|" "$INSTANCE_ROOT/symphony.env"
-sed -i "s|^SYMPHONY_TAILSERVE_SERVICE=.*|SYMPHONY_TAILSERVE_SERVICE=symphony-$INSTANCE_ID|" "$INSTANCE_ROOT/symphony.env"
 
 chmod +x "$INSTANCE_ROOT"/bin/*.sh
 
@@ -71,5 +70,5 @@ Next:
   2. Set LINEAR_API_KEY, SYMPHONY_LINEAR_PROJECT_SLUG, and SYMPHONY_SOURCE_REPO_URL
   3. Run: cd "$INSTANCE_ROOT" && bin/doctor.sh
   4. Run: cd "$INSTANCE_ROOT" && bin/start.sh
-  5. Optional stable Tailscale URL: cd "$INSTANCE_ROOT" && bin/tailserve.sh
 EOF
+

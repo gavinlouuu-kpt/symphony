@@ -14,7 +14,6 @@ defmodule SymphonyElixir.MixProject do
         ],
         ignore_modules: [
           SymphonyElixir.Config,
-          SymphonyElixir.EventLog,
           SymphonyElixir.Linear.Client,
           SymphonyElixir.SpecsCheck,
           SymphonyElixir.Orchestrator,
@@ -36,7 +35,6 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixirWeb.Layouts,
           SymphonyElixirWeb.ObservabilityApiController,
           SymphonyElixirWeb.Presenter,
-          SymphonyElixirWeb.RecordingController,
           SymphonyElixirWeb.StaticAssetController,
           SymphonyElixirWeb.StaticAssets,
           SymphonyElixirWeb.Router,
