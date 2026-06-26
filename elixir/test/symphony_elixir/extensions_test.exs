@@ -343,6 +343,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
              "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
+             "project" => %{
+               "tracker_kind" => "linear",
+               "project_slug" => "project",
+               "project_url" => "https://linear.app/project/project/issues",
+               "workspace_root" => Config.settings!().workspace.root,
+               "worker_provider" => "ssh",
+               "cua_host" => "127.0.0.1",
+               "dashboard_host" => "127.0.0.1"
+             },
              "running" => [
                %{
                  "issue_id" => "issue-http",
@@ -625,7 +634,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
+    assert html =~ "project Dashboard"
+    assert html =~ "Workspace root"
+    assert html =~ "https://linear.app/project/project/issues"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"

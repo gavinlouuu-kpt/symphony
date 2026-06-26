@@ -20,6 +20,7 @@ defmodule SymphonyElixirWeb.Presenter do
             retrying: length(snapshot.retrying),
             blocked: length(Map.get(snapshot, :blocked, []))
           },
+          project: project_payload(),
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
@@ -94,6 +95,72 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp issue_id_from_entries(running, retry, blocked),
     do: (running && running.issue_id) || (retry && retry.issue_id) || (blocked && blocked.issue_id)
+
+  defp project_payload do
+    settings = Config.settings!()
+    project_slug = settings.tracker.project_slug
+
+    source_repo_url =
+      "SYMPHONY_SOURCE_REPO_URL"
+      |> env_value()
+      |> redact_url_userinfo()
+
+    %{
+      instance_id: env_value("SYMPHONY_INSTANCE_ID"),
+      instance_root: env_value("SYMPHONY_INSTANCE_ROOT"),
+      tracker_kind: settings.tracker.kind,
+      project_slug: project_slug,
+      project_url: project_url(project_slug),
+      source_repo_url: source_repo_url,
+      source_repo_branch: env_value("SYMPHONY_SOURCE_REPO_BRANCH"),
+      workspace_root: settings.workspace.root,
+      worker_provider: settings.worker.provider,
+      cua_host: settings.cua.host,
+      dashboard_host: settings.server.host,
+      dashboard_port: Config.server_port()
+    }
+    |> Enum.reject(fn {_key, value} -> blank?(value) end)
+    |> Map.new()
+  end
+
+  defp env_value(name) when is_binary(name) do
+    name
+    |> System.get_env()
+    |> normalize_optional_string()
+  end
+
+  defp project_url(project_slug) when is_binary(project_slug) and project_slug != "",
+    do: "https://linear.app/project/#{project_slug}/issues"
+
+  defp project_url(_project_slug), do: nil
+
+  defp redact_url_userinfo(nil), do: nil
+
+  defp redact_url_userinfo(url) when is_binary(url) do
+    uri = URI.parse(url)
+
+    if is_binary(uri.userinfo) do
+      %{uri | userinfo: nil}
+      |> URI.to_string()
+    else
+      url
+    end
+  rescue
+    URI.Error -> url
+  end
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_string(_value), do: nil
+
+  defp blank?(nil), do: true
+  defp blank?(""), do: true
+  defp blank?(_value), do: false
 
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0

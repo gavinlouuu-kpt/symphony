@@ -48,7 +48,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               Symphony Observability
             </p>
             <h1 class="hero-title">
-              Operations Dashboard
+              <%= dashboard_title(@payload) %>
             </h1>
             <p class="hero-copy">
               Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
@@ -78,6 +78,60 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </p>
         </section>
       <% else %>
+        <section class="project-panel">
+          <div class="project-panel-header">
+            <p class="eyebrow">Project</p>
+            <h2 class="project-title"><%= project_name(@payload.project) %></h2>
+          </div>
+
+          <dl class="project-grid">
+            <div>
+              <dt>Instance</dt>
+              <dd class="mono"><%= project_value(@payload.project, :instance_id) %></dd>
+            </div>
+            <div>
+              <dt>Linear</dt>
+              <dd>
+                <%= if @payload.project[:project_url] do %>
+                  <a href={@payload.project.project_url} target="_blank" rel="noopener noreferrer">
+                    <%= project_value(@payload.project, :project_slug) %>
+                  </a>
+                <% else %>
+                  <span class="mono"><%= project_value(@payload.project, :project_slug) %></span>
+                <% end %>
+              </dd>
+            </div>
+            <div>
+              <dt>Repository</dt>
+              <dd>
+                <%= if @payload.project[:source_repo_url] do %>
+                  <a href={@payload.project.source_repo_url} target="_blank" rel="noopener noreferrer">
+                    <%= repo_label(@payload.project.source_repo_url) %>
+                  </a>
+                <% else %>
+                  <span class="muted">n/a</span>
+                <% end %>
+              </dd>
+            </div>
+            <div>
+              <dt>Branch</dt>
+              <dd class="mono"><%= project_value(@payload.project, :source_repo_branch) %></dd>
+            </div>
+            <div>
+              <dt>Worker</dt>
+              <dd class="mono"><%= project_value(@payload.project, :worker_provider) %></dd>
+            </div>
+            <div>
+              <dt>CUA host</dt>
+              <dd class="mono"><%= project_value(@payload.project, :cua_host) %></dd>
+            </div>
+            <div>
+              <dt>Workspace root</dt>
+              <dd class="mono project-path"><%= project_value(@payload.project, :workspace_root) %></dd>
+            </div>
+          </dl>
+        </section>
+
         <section class="metric-grid">
           <article class="metric-card">
             <p class="metric-label">Running</p>
@@ -419,6 +473,53 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
+
+  defp dashboard_title(%{project: project}) when is_map(project) do
+    case project_name(project) do
+      "unknown project" -> "Operations Dashboard"
+      name -> "#{name} Dashboard"
+    end
+  end
+
+  defp dashboard_title(_payload), do: "Operations Dashboard"
+
+  defp project_name(project) when is_map(project) do
+    Map.get(project, :instance_id) || Map.get(project, :project_slug) || repo_name(Map.get(project, :source_repo_url)) ||
+      "unknown project"
+  end
+
+  defp project_name(_project), do: "unknown project"
+
+  defp project_value(project, key) when is_map(project) do
+    case Map.get(project, key) do
+      value when is_binary(value) and value != "" -> value
+      value when is_integer(value) -> Integer.to_string(value)
+      value when is_atom(value) -> Atom.to_string(value)
+      _ -> "n/a"
+    end
+  end
+
+  defp project_value(_project, _key), do: "n/a"
+
+  defp repo_label(repo_url) when is_binary(repo_url) and repo_url != "" do
+    repo_name(repo_url) || repo_url
+  end
+
+  defp repo_label(_repo_url), do: "n/a"
+
+  defp repo_name(repo_url) when is_binary(repo_url) and repo_url != "" do
+    repo_url
+    |> String.trim_trailing("/")
+    |> String.split("/")
+    |> Enum.take(-2)
+    |> Enum.join("/")
+    |> case do
+      "" -> nil
+      label -> label
+    end
+  end
+
+  defp repo_name(_repo_url), do: nil
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator

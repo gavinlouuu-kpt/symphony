@@ -139,6 +139,7 @@ pre,
 }
 
 .hero-card,
+.project-panel,
 .section-card,
 .metric-card,
 .error-card {
@@ -233,6 +234,58 @@ pre,
 
 [data-phx-main].phx-connected .status-badge-offline {
   display: none;
+}
+
+.project-panel {
+  border-radius: 16px;
+  padding: 1rem;
+}
+
+.project-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.project-title {
+  margin: 0;
+  font-size: 1.1rem;
+  line-height: 1.2;
+  font-weight: 750;
+}
+
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.8rem;
+  margin: 0;
+}
+
+.project-grid div {
+  min-width: 0;
+}
+
+.project-grid dt {
+  margin: 0 0 0.18rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.project-grid dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.92rem;
+}
+
+.project-path {
+  display: block;
+  max-width: 100%;
 }
 
 .metric-grid {
