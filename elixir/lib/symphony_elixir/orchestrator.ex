@@ -216,6 +216,7 @@ defmodule SymphonyElixir.Orchestrator do
         issue_url: running_entry.issue.url,
         delay_type: delay_type,
         phase: next_phase,
+        review_note: Map.get(running_entry, :review_note),
         worker_host: Map.get(running_entry, :worker_host),
         workspace_path: Map.get(running_entry, :workspace_path),
         sandbox: Map.get(running_entry, :sandbox)
@@ -249,6 +250,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_url: running_entry.issue.url,
       error: "agent exited: #{inspect(reason)}",
       phase: running_entry_phase(running_entry),
+      review_note: Map.get(running_entry, :review_note),
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path),
       sandbox: Map.get(running_entry, :sandbox)
@@ -635,6 +637,7 @@ defmodule SymphonyElixir.Orchestrator do
           issue_url: running_entry.issue.url,
           error: "stalled for #{elapsed_ms}ms without codex activity",
           phase: running_entry_phase(running_entry),
+          review_note: Map.get(running_entry, :review_note),
           worker_host: Map.get(running_entry, :worker_host),
           workspace_path: Map.get(running_entry, :workspace_path),
           sandbox: Map.get(running_entry, :sandbox)
@@ -763,6 +766,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue: Map.get(running_entry, :issue),
       worker_host: Map.get(running_entry, :worker_host),
       phase: running_entry_phase(running_entry),
+      review_note: Map.get(running_entry, :review_note),
       workspace_path: Map.get(running_entry, :workspace_path),
       sandbox: Map.get(running_entry, :sandbox),
       session_id: running_entry_session_id(running_entry),
@@ -922,10 +926,10 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil, phase \\ :builder) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil, phase \\ :builder, review_note \\ nil) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, normalize_phase(phase))
+        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, normalize_phase(phase), review_note)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -942,7 +946,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, phase) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, phase, review_note) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -951,13 +955,13 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, phase)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, phase, review_note)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, phase) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, phase, review_note) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host, phase: phase)
+           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host, phase: phase, review_note: review_note)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -972,6 +976,7 @@ defmodule SymphonyElixir.Orchestrator do
             issue: issue,
             worker_host: worker_host,
             phase: phase,
+            review_note: review_note,
             workspace_path: nil,
             sandbox: nil,
             session_id: nil,
@@ -1006,6 +1011,7 @@ defmodule SymphonyElixir.Orchestrator do
           issue_url: issue.url,
           error: "failed to spawn agent: #{inspect(reason)}",
           phase: phase,
+          review_note: review_note,
           worker_host: worker_host,
           sandbox: nil
         })
@@ -1055,6 +1061,7 @@ defmodule SymphonyElixir.Orchestrator do
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
     sandbox = pick_retry_sandbox(previous_retry, metadata)
     phase = pick_retry_phase(previous_retry, metadata)
+    review_note = pick_retry_review_note(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1080,7 +1087,8 @@ defmodule SymphonyElixir.Orchestrator do
             worker_host: worker_host,
             workspace_path: workspace_path,
             sandbox: sandbox,
-            phase: phase
+            phase: phase,
+            review_note: review_note
           })
     }
   end
@@ -1095,7 +1103,8 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(retry_entry, :worker_host),
           workspace_path: Map.get(retry_entry, :workspace_path),
           sandbox: Map.get(retry_entry, :sandbox),
-          phase: Map.get(retry_entry, :phase)
+          phase: Map.get(retry_entry, :phase),
+          review_note: Map.get(retry_entry, :review_note)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1190,7 +1199,7 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata[:phase])}
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata[:phase], metadata[:review_note])}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -1267,6 +1276,10 @@ defmodule SymphonyElixir.Orchestrator do
     metadata
     |> Map.get(:phase, Map.get(previous_retry, :phase, :builder))
     |> normalize_phase()
+  end
+
+  defp pick_retry_review_note(previous_retry, metadata) do
+    metadata[:review_note] || Map.get(previous_retry, :review_note)
   end
 
   defp running_entry_phase(running_entry) when is_map(running_entry) do
@@ -1409,6 +1422,15 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec review_console_message(GenServer.server(), map()) :: {:ok, map()} | {:error, :unavailable}
+  def review_console_message(server \\ __MODULE__, request) when is_map(request) do
+    if Process.whereis(server) do
+      GenServer.call(server, {:review_console_message, request})
+    else
+      {:error, :unavailable}
+    end
+  end
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
@@ -1525,6 +1547,159 @@ defmodule SymphonyElixir.Orchestrator do
        operations: ["poll", "reconcile"]
      }, state}
   end
+
+  def handle_call({:review_console_message, request}, _from, state) when is_map(request) do
+    target = normalize_console_target(Map.get(request, :target) || Map.get(request, "target"))
+    issue_identifier = normalize_console_text(Map.get(request, :issue_identifier) || Map.get(request, "issue_identifier"))
+    body = normalize_console_text(Map.get(request, :body) || Map.get(request, "body"))
+
+    {reply, state} = handle_review_console_message(target, issue_identifier, body, state)
+    {:reply, {:ok, reply}, state}
+  end
+
+  defp handle_review_console_message("reviewer", issue_identifier, body, %State{} = state) do
+    case find_console_issue(state, issue_identifier) do
+      {:running, issue_id, running_entry} ->
+        phase = running_entry_phase(running_entry)
+
+        if phase == :builder do
+          running_entry = Map.put(running_entry, :review_note, body)
+
+          reply = %{
+            role: "reviewer",
+            body: "Queued this note for the separate reviewer. The reviewer phase will receive it after the current builder run exits normally."
+          }
+
+          {reply, %{state | running: Map.put(state.running, issue_id, running_entry)}}
+        else
+          {%{
+             role: "reviewer",
+             body: "A reviewer is already running for #{issue_identifier}. I cannot inject new prompt text into that active Codex turn; send another note after it exits if needed."
+           }, state}
+        end
+
+      {:retrying, issue_id, retry_entry} ->
+        metadata = %{
+          identifier: Map.get(retry_entry, :identifier, issue_identifier),
+          issue_url: Map.get(retry_entry, :issue_url),
+          delay_type: :review,
+          phase: :reviewer,
+          review_note: body,
+          error: "review requested from dashboard console",
+          worker_host: Map.get(retry_entry, :worker_host),
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          sandbox: Map.get(retry_entry, :sandbox)
+        }
+
+        state = schedule_issue_retry(state, issue_id, 1, metadata)
+
+        {%{
+           role: "reviewer",
+           body: "Queued a reviewer phase for #{issue_identifier}. It will start on the next active-state retry check."
+         }, state}
+
+      {:blocked, _issue_id, blocked_entry} ->
+        {%{
+           role: "reviewer",
+           body:
+             "Cannot start a reviewer while #{issue_identifier} is blocked: #{Map.get(blocked_entry, :error) || "operator input is required"}. Resolve the blocker or move the issue back to an active state first."
+         }, state}
+
+      :missing ->
+        {%{
+           role: "reviewer",
+           body:
+             "I do not see #{issue_identifier} in running, retrying, or blocked orchestration state. If its sandbox is retained, the issue has likely left active states; move it to Rework or another active state to run a reviewer."
+         }, state}
+    end
+  end
+
+  defp handle_review_console_message(_target, issue_identifier, _body, %State{} = state) do
+    reply =
+      case find_console_issue(state, issue_identifier) do
+        {:running, _issue_id, running_entry} ->
+          issue = Map.get(running_entry, :issue, %Issue{})
+
+          %{
+            role: "orchestrator",
+            body:
+              "Issue #{issue_identifier} is running in #{running_entry_phase(running_entry)} phase, Linear state #{issue_state_for_console(issue)}, worker #{Map.get(running_entry, :worker_host) || "local"}, workspace #{Map.get(running_entry, :workspace_path) || "pending"}, session #{running_entry_session_id(running_entry)}."
+          }
+
+        {:retrying, _issue_id, retry_entry} ->
+          phase = retry_entry |> Map.get(:phase, :builder) |> normalize_phase()
+          due_in_ms = retry_due_in_ms(retry_entry)
+
+          %{
+            role: "orchestrator",
+            body: "Issue #{issue_identifier} is queued for #{phase} phase retry in #{format_console_delay(due_in_ms)}. Last retry reason: #{Map.get(retry_entry, :error) || "none"}."
+          }
+
+        {:blocked, _issue_id, blocked_entry} ->
+          %{
+            role: "orchestrator",
+            body: "Issue #{issue_identifier} is blocked: #{Map.get(blocked_entry, :error) || "operator input is required"}."
+          }
+
+        :missing ->
+          %{
+            role: "orchestrator",
+            body: "I do not see #{issue_identifier} in running, retrying, or blocked orchestration state. It may be idle, in review, terminal, or retained only as a sandbox."
+          }
+      end
+
+    {reply, state}
+  end
+
+  defp find_console_issue(%State{} = state, issue_identifier) do
+    find_console_running_issue(state.running, issue_identifier) ||
+      find_console_retrying_issue(state.retry_attempts, issue_identifier) ||
+      find_console_blocked_issue(state.blocked, issue_identifier) ||
+      :missing
+  end
+
+  defp find_console_running_issue(running, issue_identifier) do
+    Enum.find_value(running, fn {issue_id, entry} ->
+      if Map.get(entry, :identifier) == issue_identifier do
+        {:running, issue_id, entry}
+      end
+    end)
+  end
+
+  defp find_console_retrying_issue(retry_attempts, issue_identifier) do
+    Enum.find_value(retry_attempts, fn {issue_id, entry} ->
+      if Map.get(entry, :identifier) == issue_identifier do
+        {:retrying, issue_id, entry}
+      end
+    end)
+  end
+
+  defp find_console_blocked_issue(blocked, issue_identifier) do
+    Enum.find_value(blocked, fn {issue_id, entry} ->
+      if Map.get(entry, :identifier) == issue_identifier do
+        {:blocked, issue_id, entry}
+      end
+    end)
+  end
+
+  defp normalize_console_target("reviewer"), do: "reviewer"
+  defp normalize_console_target(:reviewer), do: "reviewer"
+  defp normalize_console_target(_target), do: "orchestrator"
+
+  defp normalize_console_text(value) when is_binary(value), do: String.trim(value)
+  defp normalize_console_text(value), do: to_string(value || "") |> String.trim()
+
+  defp issue_state_for_console(%Issue{state: state}) when is_binary(state), do: state
+  defp issue_state_for_console(_issue), do: "unknown"
+
+  defp retry_due_in_ms(%{due_at_ms: due_at_ms}) when is_integer(due_at_ms) do
+    max(0, due_at_ms - System.monotonic_time(:millisecond))
+  end
+
+  defp retry_due_in_ms(_retry_entry), do: nil
+
+  defp format_console_delay(ms) when is_integer(ms), do: "#{Float.round(ms / 1000, 1)}s"
+  defp format_console_delay(_ms), do: "n/a"
 
   defp blocked_issue_state(%{issue: %Issue{state: state}}), do: state
   defp blocked_issue_state(_metadata), do: nil

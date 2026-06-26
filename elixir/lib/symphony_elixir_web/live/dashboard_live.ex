@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.{Orchestrator, ReviewConsole}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -13,6 +14,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     socket =
       socket
       |> assign(:payload, load_payload())
+      |> assign(:console_messages, ReviewConsole.list())
       |> assign(:now, DateTime.utc_now())
 
     if connected?(socket) do
@@ -34,7 +36,49 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:payload, load_payload())
+     |> assign(:console_messages, ReviewConsole.list())
      |> assign(:now, DateTime.utc_now())}
+  end
+
+  @impl true
+  def handle_event("console_send", %{"console" => params}, socket) do
+    payload = socket.assigns.payload
+    issue_identifier = normalize_console_param(params["issue_identifier"])
+    target = normalize_console_target(params["target"])
+    body = normalize_console_param(params["body"])
+
+    cond do
+      payload[:error] ->
+        {:noreply, socket}
+
+      issue_identifier == "" or body == "" ->
+        {:noreply, assign(socket, :console_messages, ReviewConsole.list())}
+
+      true ->
+        :ok = append_console_message(issue_identifier, target, "human", body)
+
+        response =
+          case Orchestrator.review_console_message(orchestrator(), %{
+                 issue_identifier: issue_identifier,
+                 target: target,
+                 body: body
+               }) do
+            {:ok, %{role: role, body: response_body}} ->
+              {role, response_body}
+
+            {:error, :unavailable} ->
+              {"orchestrator", "The orchestrator is unavailable."}
+          end
+
+        {role, response_body} = response
+        :ok = append_console_message(issue_identifier, target, role, response_body)
+
+        {:noreply,
+         socket
+         |> assign(:payload, load_payload())
+         |> assign(:console_messages, ReviewConsole.list())
+         |> assign(:now, DateTime.utc_now())}
+    end
   end
 
   @impl true
@@ -130,6 +174,55 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <dd class="mono project-path"><%= project_value(@payload.project, :workspace_root) %></dd>
             </div>
           </dl>
+        </section>
+
+        <section class="section-card review-console">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Review console</h2>
+              <p class="section-copy">Private issue-scoped messages to the orchestrator or next reviewer phase.</p>
+            </div>
+          </div>
+
+          <.form for={%{}} as={:console} phx-submit="console_send" class="console-form">
+            <label class="console-field">
+              <span>Issue</span>
+              <select name="console[issue_identifier]">
+                <option :for={identifier <- console_issue_options(@payload)} value={identifier}>
+                  <%= identifier %>
+                </option>
+              </select>
+            </label>
+
+            <label class="console-field">
+              <span>Target</span>
+              <select name="console[target]">
+                <option value="orchestrator">Orchestrator</option>
+                <option value="reviewer">Reviewer</option>
+              </select>
+            </label>
+
+            <label class="console-field console-message-field">
+              <span>Message</span>
+              <textarea name="console[body]" rows="3" placeholder="Ask for status, request a reviewer check, or leave a note for human review."></textarea>
+            </label>
+
+            <button type="submit">Send</button>
+          </.form>
+
+          <div class="console-log">
+            <%= if @console_messages == [] do %>
+              <p class="empty-state">No console messages yet.</p>
+            <% else %>
+              <article :for={message <- console_messages_for_display(@console_messages)} class={"console-message console-message-#{message.role}"}>
+                <header>
+                  <span class="console-role"><%= console_role_label(message.role) %></span>
+                  <span class="mono muted"><%= message.issue_identifier %> · <%= message.target %> · <%= DateTime.to_iso8601(message.created_at) %></span>
+                </header>
+                <p><%= message.body %></p>
+              </article>
+            <% end %>
+          </div>
         </section>
 
         <section class="metric-grid">
@@ -520,6 +613,48 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp repo_name(_repo_url), do: nil
+
+  defp console_issue_options(%{running: running, retrying: retrying, blocked: blocked, sandboxes: sandboxes}) do
+    [running, retrying, blocked, sandboxes]
+    |> List.flatten()
+    |> Enum.flat_map(fn
+      %{issue_identifier: identifier} when is_binary(identifier) and identifier != "" -> [identifier]
+      _ -> []
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp console_issue_options(_payload), do: []
+
+  defp console_messages_for_display(messages) when is_list(messages) do
+    messages
+    |> Enum.take(30)
+    |> Enum.reverse()
+  end
+
+  defp console_role_label("human"), do: "You"
+  defp console_role_label("reviewer"), do: "Reviewer"
+  defp console_role_label("orchestrator"), do: "Orchestrator"
+  defp console_role_label(role), do: role
+
+  defp normalize_console_param(value) when is_binary(value), do: String.trim(value)
+  defp normalize_console_param(_value), do: ""
+
+  defp normalize_console_target("reviewer"), do: "reviewer"
+  defp normalize_console_target(_target), do: "orchestrator"
+
+  defp append_console_message(issue_identifier, target, role, body) do
+    case ReviewConsole.append(%{
+           issue_identifier: issue_identifier,
+           target: target,
+           role: role,
+           body: body
+         }) do
+      {:ok, _message} -> :ok
+      {:error, :unavailable} -> :ok
+    end
+  end
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator

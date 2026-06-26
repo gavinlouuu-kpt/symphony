@@ -288,6 +288,86 @@ pre,
   max-width: 100%;
 }
 
+.review-console {
+  display: grid;
+  gap: 1rem;
+}
+
+.console-form {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.7fr) minmax(9rem, 0.45fr) minmax(18rem, 1.6fr) auto;
+  gap: 0.8rem;
+  align-items: end;
+}
+
+.console-field {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.console-field span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.console-field select,
+.console-field textarea {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.58rem 0.7rem;
+  box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.03);
+}
+
+.console-field textarea {
+  resize: vertical;
+  min-height: 4.2rem;
+}
+
+.console-log {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.console-message {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.58);
+  padding: 0.75rem;
+}
+
+.console-message header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: baseline;
+  margin-bottom: 0.35rem;
+}
+
+.console-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.console-role {
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.console-message-human {
+  border-color: rgba(16, 163, 127, 0.28);
+  background: var(--accent-soft);
+}
+
 .metric-grid {
   display: grid;
   gap: 0.85rem;
@@ -530,7 +610,8 @@ pre,
     padding: 1rem 0.85rem 2rem;
   }
 
-  .hero-grid {
+  .hero-grid,
+  .console-form {
     grid-template-columns: 1fr;
   }
 

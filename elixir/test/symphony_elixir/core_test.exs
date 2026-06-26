@@ -721,6 +721,86 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_after_in_range(due_at_ms, scheduled_after_ms, 500, 1_100)
   end
 
+  test "review console queues reviewer note for a running builder" do
+    issue_id = "issue-console-running"
+    orchestrator_name = Module.concat(__MODULE__, :ConsoleRunningOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    running_entry = %{
+      pid: self(),
+      ref: nil,
+      identifier: "MT-CONSOLE",
+      phase: :builder,
+      issue: %Issue{id: issue_id, identifier: "MT-CONSOLE", state: "In Progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn state ->
+      state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+    end)
+
+    assert {:ok, %{role: "reviewer", body: body}} =
+             Orchestrator.review_console_message(orchestrator_name, %{
+               issue_identifier: "MT-CONSOLE",
+               target: "reviewer",
+               body: "Pay attention to the visible demo."
+             })
+
+    assert body =~ "Queued this note"
+    assert :sys.get_state(pid).running[issue_id].review_note == "Pay attention to the visible demo."
+  end
+
+  test "review console can reschedule a retry as reviewer phase" do
+    issue_id = "issue-console-retry"
+    orchestrator_name = Module.concat(__MODULE__, :ConsoleRetryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    retry_token = make_ref()
+
+    :sys.replace_state(pid, fn state ->
+      Map.put(state, :retry_attempts, %{
+        issue_id => %{
+          attempt: 2,
+          timer_ref: nil,
+          retry_token: retry_token,
+          due_at_ms: System.monotonic_time(:millisecond) + 30_000,
+          identifier: "MT-RETRY-CONSOLE",
+          issue_url: "https://example.org/issues/MT-RETRY-CONSOLE",
+          phase: :builder,
+          error: "previous failure"
+        }
+      })
+    end)
+
+    assert {:ok, %{role: "reviewer", body: body}} =
+             Orchestrator.review_console_message(orchestrator_name, %{
+               issue_identifier: "MT-RETRY-CONSOLE",
+               target: "reviewer",
+               body: "Review the regression evidence."
+             })
+
+    assert body =~ "Queued a reviewer phase"
+
+    retry = :sys.get_state(pid).retry_attempts[issue_id]
+    assert retry.phase == :reviewer
+    assert retry.review_note == "Review the regression evidence."
+    assert retry.attempt == 1
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()
@@ -1601,6 +1681,7 @@ defmodule SymphonyElixir.CoreTest do
       assert :ok =
                AgentRunner.run(issue, nil,
                  phase: :reviewer,
+                 review_note: "Check the video artifact before passing.",
                  issue_state_fetcher: fn [_issue_id] ->
                    send(parent, :reviewer_state_fetch)
                    {:ok, [%{issue | state: "In Progress"}]}
@@ -1628,6 +1709,8 @@ defmodule SymphonyElixir.CoreTest do
       assert reviewer_text =~ "Reviewer phase:"
       assert reviewer_text =~ "You are a separate reviewer"
       assert reviewer_text =~ "move the issue to In Review"
+      assert reviewer_text =~ "Human review note:"
+      assert reviewer_text =~ "Check the video artifact before passing."
       assert reviewer_text =~ "Ticket MT-249"
       refute reviewer_text =~ "Continuation guidance:"
     after

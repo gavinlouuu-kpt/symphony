@@ -212,6 +212,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp reviewer_prompt(issue, opts) do
     base_prompt = PromptBuilder.build_prompt(issue, opts)
+    review_note = reviewer_note_section(Keyword.get(opts, :review_note))
 
     """
     Reviewer phase:
@@ -229,11 +230,29 @@ defmodule SymphonyElixir.AgentRunner do
     - If the work fails or is blocked, update the issue/workpad with concrete findings and move the issue to Rework.
     - Do not mark the issue Done or close/delete the sandbox from the reviewer phase.
 
+    #{review_note}
+
     Original issue context follows.
 
     #{base_prompt}
     """
   end
+
+  defp reviewer_note_section(note) when is_binary(note) do
+    case String.trim(note) do
+      "" ->
+        ""
+
+      trimmed ->
+        """
+        Human review note:
+
+        #{trimmed}
+        """
+    end
+  end
+
+  defp reviewer_note_section(_note), do: ""
 
   defp normalize_phase(:reviewer), do: :reviewer
   defp normalize_phase("reviewer"), do: :reviewer
