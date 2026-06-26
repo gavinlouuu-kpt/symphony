@@ -4,6 +4,8 @@ defmodule SymphonyElixirWeb.Presenter do
   """
 
   alias SymphonyElixir.{Config, EventLog, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.Cua.Sandbox, as: CuaSandbox
+  alias SymphonyElixirWeb.Evidence
 
   @recent_events_limit 25
 
@@ -20,9 +22,11 @@ defmodule SymphonyElixirWeb.Presenter do
             retrying: length(snapshot.retrying),
             blocked: length(Map.get(snapshot, :blocked, []))
           },
+          project: project_payload(),
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
+          sandboxes: sandbox_inventory(snapshot),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
         }
@@ -74,6 +78,7 @@ defmodule SymphonyElixirWeb.Presenter do
         path: workspace_path(issue_identifier, running, retry, blocked),
         host: workspace_host(running, retry, blocked)
       },
+      sandbox: sandbox_from_entries(running, retry, blocked),
       attempts: %{
         restart_count: restart_count(retry),
         current_retry_attempt: retry_attempt(retry)
@@ -103,6 +108,96 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_id_from_entries(running, retry, blocked),
     do: (running && running.issue_id) || (retry && retry.issue_id) || (blocked && blocked.issue_id)
 
+  defp project_payload do
+    settings = Config.settings!()
+    project_slug = settings.tracker.project_slug
+
+    source_repo_url =
+      "SYMPHONY_SOURCE_REPO_URL"
+      |> env_value()
+      |> redact_url_userinfo()
+
+    %{
+      instance_id: env_value("SYMPHONY_INSTANCE_ID"),
+      instance_root: env_value("SYMPHONY_INSTANCE_ROOT"),
+      tracker_kind: settings.tracker.kind,
+      project_slug: project_slug,
+      project_url: project_url(project_slug),
+      source_repo_url: source_repo_url,
+      source_repo_branch: env_value("SYMPHONY_SOURCE_REPO_BRANCH"),
+      workspace_root: settings.workspace.root,
+      worker_provider: settings.worker.provider,
+      cua_host: settings.cua.host,
+      dashboard_host: settings.server.host,
+      dashboard_port: Config.server_port(),
+      tailserve_url: tailserve_url()
+    }
+    |> Enum.reject(fn {_key, value} -> blank?(value) end)
+    |> Map.new()
+  end
+
+  defp env_value(name) when is_binary(name) do
+    name
+    |> System.get_env()
+    |> normalize_optional_string()
+  end
+
+  defp tailserve_url do
+    case env_value("SYMPHONY_TAILSERVE_URL") || runtime_tailserve_url() do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp runtime_tailserve_url do
+    with instance_root when is_binary(instance_root) <- env_value("SYMPHONY_INSTANCE_ROOT"),
+         {:ok, contents} <- File.read(Path.join([instance_root, "runtime", "tailserve.env"])) do
+      contents
+      |> String.split("\n", trim: true)
+      |> Enum.find_value(fn line ->
+        case String.split(line, "=", parts: 2) do
+          ["SYMPHONY_TAILSERVE_URL", value] -> value |> String.trim("'\"") |> normalize_optional_string()
+          _ -> nil
+        end
+      end)
+    else
+      _ -> nil
+    end
+  end
+
+  defp project_url(project_slug) when is_binary(project_slug) and project_slug != "",
+    do: "https://linear.app/project/#{project_slug}/issues"
+
+  defp project_url(_project_slug), do: nil
+
+  defp redact_url_userinfo(nil), do: nil
+
+  defp redact_url_userinfo(url) when is_binary(url) do
+    uri = URI.parse(url)
+
+    if is_binary(uri.userinfo) do
+      %{uri | userinfo: nil}
+      |> URI.to_string()
+    else
+      url
+    end
+  rescue
+    URI.Error -> url
+  end
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_string(_value), do: nil
+
+  defp blank?(nil), do: true
+  defp blank?(""), do: true
+  defp blank?(_value), do: false
+
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
   defp retry_attempt(retry), do: retry.attempt || 0
@@ -115,10 +210,12 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
+      issue_url: Map.get(entry, :issue_url),
       state: entry.state,
+      phase: format_phase(Map.get(entry, :phase)),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
-      container: container_payload(Map.get(entry, :container)),
+      sandbox: sandbox_payload(Map.get(entry, :sandbox)),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
@@ -137,11 +234,14 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
+      issue_url: Map.get(entry, :issue_url),
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
+      phase: format_phase(Map.get(entry, :phase)),
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: Map.get(entry, :workspace_path)
+      workspace_path: Map.get(entry, :workspace_path),
+      sandbox: sandbox_payload(Map.get(entry, :sandbox))
     }
   end
 
@@ -149,11 +249,13 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
+      issue_url: Map.get(entry, :issue_url),
       state: entry.state,
       error: entry.error,
+      phase: format_phase(Map.get(entry, :phase)),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
-      container: container_payload(Map.get(entry, :container)),
+      sandbox: sandbox_payload(Map.get(entry, :sandbox)),
       session_id: entry.session_id,
       blocked_at: iso8601(entry.blocked_at),
       last_event: entry.last_codex_event,
@@ -166,9 +268,10 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
-      container: container_payload(Map.get(running, :container)),
+      sandbox: sandbox_payload(Map.get(running, :sandbox)),
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
+      phase: format_phase(Map.get(running, :phase)),
       state: running.state,
       started_at: iso8601(running.started_at),
       last_event: running.last_codex_event,
@@ -187,8 +290,10 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: retry.attempt,
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
+      phase: format_phase(Map.get(retry, :phase)),
       worker_host: Map.get(retry, :worker_host),
-      workspace_path: Map.get(retry, :workspace_path)
+      workspace_path: Map.get(retry, :workspace_path),
+      sandbox: sandbox_payload(Map.get(retry, :sandbox))
     }
   end
 
@@ -196,10 +301,11 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       worker_host: Map.get(blocked, :worker_host),
       workspace_path: Map.get(blocked, :workspace_path),
-      container: container_payload(Map.get(blocked, :container)),
+      sandbox: sandbox_payload(Map.get(blocked, :sandbox)),
       session_id: blocked.session_id,
       state: blocked.state,
       error: blocked.error,
+      phase: format_phase(Map.get(blocked, :phase)),
       blocked_at: iso8601(blocked.blocked_at),
       last_event: blocked.last_codex_event,
       last_message: summarize_message(blocked.last_codex_message),
@@ -220,21 +326,97 @@ defmodule SymphonyElixirWeb.Presenter do
       (blocked && Map.get(blocked, :worker_host))
   end
 
-  defp container_payload(%{} = container) do
-    %{
-      container_id: Map.get(container, :container_id),
-      container_name: Map.get(container, :container_name),
-      image: Map.get(container, :image),
-      engine: Map.get(container, :engine),
-      workspace_mount: Map.get(container, :workspace_mount),
-      novnc_port: Map.get(container, :novnc_port),
-      novnc_url: Map.get(container, :novnc_url),
-      recording: Map.get(container, :recording, false),
-      recordings_path: Map.get(container, :recordings_path)
-    }
+  defp sandbox_from_entries(running, retry, blocked) do
+    (running && sandbox_payload(Map.get(running, :sandbox))) ||
+      (retry && sandbox_payload(Map.get(retry, :sandbox))) ||
+      (blocked && sandbox_payload(Map.get(blocked, :sandbox)))
   end
 
-  defp container_payload(_container), do: nil
+  defp sandbox_payload(nil), do: nil
+
+  defp sandbox_payload(sandbox) when is_map(sandbox) do
+    %{
+      name: Map.get(sandbox, :name) || Map.get(sandbox, "name"),
+      provider: Map.get(sandbox, :provider) || Map.get(sandbox, "provider"),
+      driver: Map.get(sandbox, :driver) || Map.get(sandbox, "driver"),
+      source: Map.get(sandbox, :source) || Map.get(sandbox, "source"),
+      status: Map.get(sandbox, :status) || Map.get(sandbox, "status"),
+      host: Map.get(sandbox, :host) || Map.get(sandbox, "host"),
+      ssh_target: Map.get(sandbox, :ssh_target) || Map.get(sandbox, "ssh_target"),
+      ssh_port: Map.get(sandbox, :ssh_port) || Map.get(sandbox, "ssh_port"),
+      lifecycle: Map.get(sandbox, :lifecycle) || Map.get(sandbox, "lifecycle"),
+      vnc_url: Map.get(sandbox, :vnc_url) || Map.get(sandbox, "vnc_url"),
+      novnc_url: Map.get(sandbox, :novnc_url) || Map.get(sandbox, "novnc_url"),
+      api_url: Map.get(sandbox, :api_url) || Map.get(sandbox, "api_url")
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp sandbox_payload(_sandbox), do: nil
+
+  defp format_phase(:reviewer), do: "reviewer"
+  defp format_phase("reviewer"), do: "reviewer"
+  defp format_phase(:builder), do: "builder"
+  defp format_phase("builder"), do: "builder"
+  defp format_phase(_phase), do: "builder"
+
+  defp sandbox_inventory(snapshot) do
+    []
+    |> Kernel.++(Enum.map(snapshot.running, &sandbox_inventory_entry(&1, "running")))
+    |> Kernel.++(Enum.map(snapshot.retrying, &sandbox_inventory_entry(&1, "retrying")))
+    |> Kernel.++(Enum.map(Map.get(snapshot, :blocked, []), &sandbox_inventory_entry(&1, "blocked")))
+    |> Kernel.++(Enum.map(CuaSandbox.list_live(), &retained_sandbox_inventory_entry/1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(fn entry ->
+      entry.sandbox[:name] || entry.sandbox["name"] || {entry.issue_id, entry.issue_status}
+    end)
+  end
+
+  defp sandbox_inventory_entry(entry, issue_status) when is_map(entry) do
+    case sandbox_payload(Map.get(entry, :sandbox)) do
+      nil ->
+        nil
+
+      sandbox ->
+        %{
+          issue_id: Map.get(entry, :issue_id),
+          issue_identifier: Map.get(entry, :identifier),
+          issue_url: Map.get(entry, :issue_url),
+          issue_status: issue_status,
+          worker_host: Map.get(entry, :worker_host),
+          workspace_path: Map.get(entry, :workspace_path),
+          sandbox: sandbox
+        }
+        |> maybe_put_evidence(Map.get(entry, :identifier))
+    end
+  end
+
+  defp retained_sandbox_inventory_entry(entry) when is_map(entry) do
+    case sandbox_payload(Map.get(entry, :sandbox)) do
+      nil ->
+        nil
+
+      sandbox ->
+        %{
+          issue_id: Map.get(entry, :issue_id),
+          issue_identifier: Map.get(entry, :issue_identifier),
+          issue_url: Map.get(entry, :issue_url),
+          issue_status: Map.get(entry, :issue_status) || "retained",
+          worker_host: Map.get(entry, :worker_host),
+          workspace_path: Map.get(entry, :workspace_path),
+          sandbox: sandbox
+        }
+        |> maybe_put_evidence(Map.get(entry, :issue_identifier))
+    end
+  end
+
+  defp maybe_put_evidence(payload, issue_identifier) do
+    case Evidence.files_for_issue(issue_identifier) do
+      [] -> payload
+      artifacts -> Map.put(payload, :evidence, artifacts)
+    end
+  end
 
   defp recent_events_payload(issue_identifier, entry) do
     case EventLog.list(issue_identifier, limit: @recent_events_limit) do

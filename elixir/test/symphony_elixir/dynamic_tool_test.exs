@@ -22,6 +22,19 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert description =~ "Linear"
   end
 
+  test "tool_specs advertises sandbox tools when a sandbox context is present" do
+    specs =
+      DynamicTool.tool_specs(sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"})
+
+    assert Enum.map(specs, & &1["name"]) == [
+             "linear_graphql",
+             "sandbox_exec",
+             "sandbox_visible_exec",
+             "sandbox_read_file",
+             "sandbox_write_file"
+           ]
+  end
+
   test "unsupported tools return a failure payload with the supported tool list" do
     response = DynamicTool.execute("not_a_real_tool", %{})
 
@@ -40,6 +53,117 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "text" => response["output"]
              }
            ]
+  end
+
+  test "unsupported tools include sandbox tool names when sandbox context is present" do
+    response =
+      DynamicTool.execute("not_a_real_tool", %{}, sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"})
+
+    assert response["success"] == false
+
+    assert get_in(Jason.decode!(response["output"]), ["error", "supportedTools"]) == [
+             "linear_graphql",
+             "sandbox_exec",
+             "sandbox_visible_exec",
+             "sandbox_read_file",
+             "sandbox_write_file"
+           ]
+  end
+
+  test "sandbox_exec runs a command through ssh in the sandbox workspace" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dynamic-tool-sandbox-#{System.unique_integer([:positive])}"
+      )
+
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+
+    File.write!(Path.join(test_root, "ssh"), """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+    printf 'sandbox output\\n'
+    exit 0
+    """)
+
+    File.chmod!(Path.join(test_root, "ssh"), 0o755)
+    System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+    response =
+      DynamicTool.execute("sandbox_exec", %{"command" => "printf ok"}, sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"})
+
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"status" => 0, "output" => "sandbox output\n"}
+
+    trace = File.read!(trace_file)
+    assert trace =~ "cua@127.0.0.1"
+    assert trace =~ "-p 2222"
+    assert trace =~ "/home/cua/workspace"
+    assert trace =~ "printf ok"
+  end
+
+  test "sandbox_visible_exec launches a desktop terminal through ssh" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dynamic-tool-visible-sandbox-#{System.unique_integer([:positive])}"
+      )
+
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+
+    File.write!(Path.join(test_root, "ssh"), """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+    printf 'visible output\\n'
+    exit 0
+    """)
+
+    File.chmod!(Path.join(test_root, "ssh"), 0o755)
+    System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+    response =
+      DynamicTool.execute(
+        "sandbox_visible_exec",
+        %{"command" => "printf visible", "title" => "Visible Check", "timeout_ms" => 12_345},
+        sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"}
+      )
+
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"status" => 0, "output" => "visible output\n"}
+
+    trace = File.read!(trace_file)
+    assert trace =~ "cua@127.0.0.1"
+    assert trace =~ "-p 2222"
+    assert trace =~ "/home/cua/workspace"
+    assert trace =~ ".symphony/visible-exec"
+    assert trace =~ "DISPLAY="
+    assert trace =~ "xfce4-terminal"
+    assert trace =~ "x-terminal-emulator"
+    assert trace =~ "env_file=\"$run_dir/$run_id.env\""
+    assert trace =~ "SYMPHONY_VISIBLE_COMMAND=%q"
+    assert trace =~ ". \"$env_file\""
+    assert trace =~ "bash %q %q"
+    assert trace =~ "\"$launcher\" \"$title\" \"$runner\" \"$env_file\""
+    refute trace =~ "SYMPHONY_VISIBLE_RUNNER=\"$runner\""
+    assert trace =~ Base.encode64("printf visible")
+    assert trace =~ Base.encode64("Visible Check")
+    assert trace =~ "deadline=$((SECONDS + 13))"
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do

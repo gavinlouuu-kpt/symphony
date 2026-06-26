@@ -5,19 +5,30 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, ContainerOrchestrator, ContainerRuntime, Linear.Issue}
-  alias SymphonyElixir.{PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.Cua.Sandbox
+  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
+  @type phase :: :builder | :reviewer
+
+  @doc false
+  @spec continue_with_issue_for_test(Issue.t(), ([String.t()] -> term())) ::
+          {:continue, Issue.t()} | {:done, Issue.t()} | {:error, term()}
+  def continue_with_issue_for_test(%Issue{} = issue, issue_state_fetcher)
+      when is_function(issue_state_fetcher, 1) do
+    continue_with_issue?(issue, issue_state_fetcher)
+  end
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
     # The orchestrator owns host retries so one worker lifetime never hops machines.
-    worker_host = selected_worker_host(Keyword.get(opts, :worker_host), Config.settings!().worker.ssh_hosts)
+    runtime = worker_runtime!(issue, opts)
+    worker_host = Map.get(runtime, :worker_host)
+    sandbox = Map.get(runtime, :sandbox)
 
-    Logger.info("Starting agent run for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
+    Logger.info("Starting agent run for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)} sandbox=#{sandbox_name_for_log(sandbox)}")
 
-    case run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
+    case run_on_worker_host(issue, codex_update_recipient, opts, worker_host, sandbox) do
       :ok ->
         :ok
 
@@ -27,47 +38,43 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
-    Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
+  defp worker_runtime!(issue, opts) do
+    settings = Config.settings!()
+
+    case settings.worker.provider do
+      "cua" ->
+        case Sandbox.ensure_for_issue(issue) do
+          {:ok, runtime} -> runtime
+          {:error, reason} -> raise RuntimeError, "CUA sandbox provisioning failed for #{issue_context(issue)}: #{inspect(reason)}"
+        end
+
+      _ ->
+        %{
+          worker_host: selected_worker_host(Keyword.get(opts, :worker_host), settings.worker.ssh_hosts),
+          sandbox: nil
+        }
+    end
+  end
+
+  defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host, sandbox) do
+    Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)} sandbox=#{sandbox_name_for_log(sandbox)}")
 
     case Workspace.create_for_issue(issue, worker_host) do
       {:ok, workspace} ->
-        case maybe_start_container(issue, workspace, worker_host) do
-          {:ok, container} ->
-            send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace, container)
+        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace, sandbox)
 
-            try do
-              with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-                run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host, container)
-              end
-            after
-              Workspace.run_after_run_hook(workspace, issue, worker_host)
-            end
-
-          {:error, reason} ->
-            {:error, {:container_start_failed, reason}}
+        try do
+          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
+            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host, sandbox)
+          end
+        after
+          Workspace.run_after_run_hook(workspace, issue, worker_host)
         end
 
       {:error, reason} ->
         {:error, reason}
     end
   end
-
-  defp maybe_start_container(issue, workspace, nil) do
-    if ContainerRuntime.enabled?() do
-      with {:ok, container} <- ContainerRuntime.ensure_started(issue.identifier, workspace) do
-        # Setup phase: decide and install the reusable features this repo needs.
-        ContainerOrchestrator.setup(container, workspace)
-        {:ok, container}
-      end
-    else
-      {:ok, nil}
-    end
-  end
-
-  # Containers are only managed on the orchestrator host; SSH workers keep the
-  # existing remote-execution path.
-  defp maybe_start_container(_issue, _workspace, _worker_host), do: {:ok, nil}
 
   defp codex_message_handler(recipient, issue) do
     fn message ->
@@ -83,7 +90,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_codex_update(_recipient, _issue, _message), do: :ok
 
-  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace, container)
+  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace, sandbox)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
     send(
       recipient,
@@ -91,36 +98,51 @@ defmodule SymphonyElixir.AgentRunner do
        %{
          worker_host: worker_host,
          workspace_path: workspace,
-         container: container
+         sandbox: sandbox
        }}
     )
 
     :ok
   end
 
-  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace, _container), do: :ok
+  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace, _sandbox), do: :ok
 
-  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host, container) do
-    max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
+  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host, sandbox) do
+    phase = normalize_phase(Keyword.get(opts, :phase, :builder))
+    max_turns = max_turns_for_phase(phase, opts)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
-    session_workspace = session_workspace(workspace, container)
+    codex_context = codex_context!(issue, workspace, worker_host, sandbox)
 
-    with {:ok, session} <- AppServer.start_session(session_workspace, worker_host: worker_host, container: container) do
-      try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
-      after
-        AppServer.stop_session(session)
+    try do
+      with {:ok, session} <- AppServer.start_session(codex_context.workspace, codex_context.start_opts) do
+        try do
+          opts =
+            opts
+            |> Keyword.put(:phase, phase)
+            |> Keyword.put(:prompt_prefix, codex_context.prompt_prefix)
+
+          do_run_codex_turns(
+            session,
+            workspace,
+            issue,
+            codex_update_recipient,
+            opts,
+            issue_state_fetcher,
+            1,
+            max_turns
+          )
+        after
+          AppServer.stop_session(session)
+        end
       end
+    after
+      codex_context.cleanup.()
     end
   end
 
-  defp session_workspace(_workspace, %{workspace_mount: workspace_mount}) when is_binary(workspace_mount),
-    do: workspace_mount
-
-  defp session_workspace(workspace, _container), do: workspace
-
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+    phase = Keyword.get(opts, :phase, :builder)
 
     with {:ok, turn_session} <-
            AppServer.run_turn(
@@ -129,55 +151,120 @@ defmodule SymphonyElixir.AgentRunner do
              issue,
              on_message: codex_message_handler(codex_update_recipient, issue)
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} phase=#{phase} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      if phase == :reviewer do
+        :ok
+      else
+        case continue_with_issue?(issue, issue_state_fetcher) do
+          {:continue, refreshed_issue} when turn_number < max_turns ->
+            Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_codex_turns(
-            app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+            do_run_codex_turns(
+              app_session,
+              workspace,
+              refreshed_issue,
+              codex_update_recipient,
+              opts,
+              issue_state_fetcher,
+              turn_number + 1,
+              max_turns
+            )
 
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+          {:continue, refreshed_issue} ->
+            Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
 
-          :ok
+            :ok
 
-        {:done, _refreshed_issue} ->
-          :ok
+          {:done, _refreshed_issue} ->
+            :ok
 
-        {:error, reason} ->
-          {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns) do
+    prompt_prefix = Keyword.get(opts, :prompt_prefix, "")
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+    case Keyword.get(opts, :phase, :builder) do
+      :reviewer -> prompt_prefix <> reviewer_prompt(issue, opts)
+      _ -> prompt_prefix <> PromptBuilder.build_prompt(issue, opts)
+    end
+  end
+
+  defp build_turn_prompt(_issue, opts, turn_number, max_turns) do
+    prompt_prefix = Keyword.get(opts, :prompt_prefix, "")
+
+    prompt_prefix <>
+      """
+      Continuation guidance:
+
+      - The previous Codex turn completed normally, but the Linear issue is still in an active state.
+      - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
+      - Resume from the current workspace and workpad state instead of restarting from scratch.
+      - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
+      - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
+      """
+  end
+
+  defp reviewer_prompt(issue, opts) do
+    base_prompt = PromptBuilder.build_prompt(issue, opts)
+    review_note = reviewer_note_section(Keyword.get(opts, :review_note))
+
     """
-    Continuation guidance:
+    Reviewer phase:
 
-    - The previous Codex turn completed normally, but the Linear issue is still in an active state.
-    - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
-    - Resume from the current workspace and workpad state instead of restarting from scratch.
-    - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
-    - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
+    You are a separate reviewer for this issue, not the builder that just worked on it. Start from the repository, workpad, sandbox state, tests, logs, and evidence artifacts. Do not rely on the builder's conclusions without checking them.
+
+    Review goals:
+    - Reconstruct the issue's acceptance criteria from the ticket and workpad.
+    - Inspect the actual implementation, tests, UI/noVNC evidence when relevant, and recorded artifacts.
+    - Run focused verification commands that are appropriate for the changed surface.
+    - Look for shared causes, missing regression coverage, unsafe shortcuts, and incomplete user-facing workflows.
+
+    Decision:
+    - If the work passes, update the issue/workpad with the review evidence and move the issue to In Review.
+    - If the work fails or is blocked, update the issue/workpad with concrete findings and move the issue to Rework.
+    - Do not mark the issue Done or close/delete the sandbox from the reviewer phase.
+
+    #{review_note}
+
+    Original issue context follows.
+
+    #{base_prompt}
     """
   end
+
+  defp reviewer_note_section(note) when is_binary(note) do
+    case String.trim(note) do
+      "" ->
+        ""
+
+      trimmed ->
+        """
+        Human review note:
+
+        #{trimmed}
+        """
+    end
+  end
+
+  defp reviewer_note_section(_note), do: ""
+
+  defp normalize_phase(:reviewer), do: :reviewer
+  defp normalize_phase("reviewer"), do: :reviewer
+  defp normalize_phase(_phase), do: :builder
+
+  defp max_turns_for_phase(:reviewer, _opts), do: 1
+  defp max_turns_for_phase(:builder, opts), do: Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
-        if active_issue_state?(refreshed_issue.state) do
+        if active_issue_state?(refreshed_issue.state) and issue_routable?(refreshed_issue) do
           {:continue, refreshed_issue}
         else
           {:done, refreshed_issue}
@@ -202,6 +289,10 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp active_issue_state?(_state_name), do: false
 
+  defp issue_routable?(%Issue{} = issue) do
+    Issue.routable?(issue, Config.settings!().tracker.required_labels)
+  end
+
   defp selected_worker_host(nil, []), do: nil
 
   defp selected_worker_host(preferred_host, configured_hosts) when is_list(configured_hosts) do
@@ -220,6 +311,73 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
+
+  defp sandbox_name_for_log(%{name: name}) when is_binary(name), do: name
+  defp sandbox_name_for_log(_sandbox), do: "none"
+
+  defp codex_context!(issue, workspace, worker_host, %{provider: "cua"} = sandbox)
+       when is_binary(workspace) and is_binary(worker_host) do
+    root = Path.join(System.tmp_dir!(), "symphony_cua_agent_workspaces")
+    host_workspace = Path.join(root, safe_identifier(issue_identifier(issue)))
+
+    File.rm_rf!(host_workspace)
+    File.mkdir_p!(host_workspace)
+
+    %{
+      workspace: host_workspace,
+      start_opts: [
+        workspace_root: root,
+        dynamic_tool_context: %{
+          sandbox: %{
+            provider: "cua",
+            name: Map.get(sandbox, :name),
+            worker_host: worker_host,
+            workspace: workspace
+          }
+        }
+      ],
+      prompt_prefix: cua_host_agent_prompt(workspace),
+      cleanup: fn -> File.rm_rf(host_workspace) end
+    }
+  end
+
+  defp codex_context!(_issue, workspace, worker_host, _sandbox) do
+    %{
+      workspace: workspace,
+      start_opts: [worker_host: worker_host],
+      prompt_prefix: "",
+      cleanup: fn -> :ok end
+    }
+  end
+
+  defp cua_host_agent_prompt(workspace) do
+    """
+    Symphony is running you on the host orchestrator while the issue's actual development environment is a CUA sandbox.
+
+    The CUA sandbox workspace is:
+    #{workspace}
+
+    Your local working directory is only a host-side control workspace. Do not use local shell commands or local file edits for issue work.
+    When task instructions refer to the current working directory or workspace root, interpret that as the CUA sandbox workspace above.
+    Use `sandbox_exec` for headless shell commands in the CUA workspace, `sandbox_visible_exec` for commands that must be visible through noVNC, `sandbox_read_file` to inspect sandbox files, and `sandbox_write_file` to write sandbox files.
+    When the issue asks for real-user testing, noVNC/demo evidence, browser/app validation, or visible desktop activity, you must use `sandbox_visible_exec` for the relevant app/test commands and document the transcript path under `.symphony/visible-exec`.
+    Use `linear_graphql` for Linear API work.
+
+    """
+  end
+
+  defp issue_identifier(%Issue{identifier: identifier, id: id}), do: identifier || id
+  defp issue_identifier(%{identifier: identifier}), do: identifier
+  defp issue_identifier(%{"identifier" => identifier}), do: identifier
+  defp issue_identifier(%{id: id}), do: id
+  defp issue_identifier(%{"id" => id}), do: id
+  defp issue_identifier(_issue), do: "issue"
+
+  defp safe_identifier(identifier) do
+    identifier
+    |> to_string()
+    |> String.replace(~r/[^a-zA-Z0-9._-]/, "_")
+  end
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     state_name

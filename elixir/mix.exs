@@ -31,6 +31,8 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixirWeb.Endpoint,
           SymphonyElixirWeb.ErrorHTML,
           SymphonyElixirWeb.ErrorJSON,
+          SymphonyElixirWeb.Evidence,
+          SymphonyElixirWeb.EvidenceController,
           SymphonyElixirWeb.Layouts,
           SymphonyElixirWeb.ObservabilityApiController,
           SymphonyElixirWeb.Presenter,

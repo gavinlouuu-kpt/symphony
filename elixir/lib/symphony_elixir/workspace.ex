@@ -419,7 +419,7 @@ defmodule SymphonyElixir.Workspace do
       "#{variable_name}=#{shell_escape(raw_path)}",
       "case \"$#{variable_name}\" in",
       "  '~') #{variable_name}=\"$HOME\" ;;",
-      "  '~/'*) " <> variable_name <> "=\"$HOME/${" <> variable_name <> "#~/}\" ;;",
+      "  '~/'*) " <> variable_name <> "=\"$HOME/${" <> variable_name <> "#\\~/}\" ;;",
       "esac"
     ]
     |> Enum.join("\n")

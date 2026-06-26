@@ -82,6 +82,27 @@ button.secondary:hover {
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
 }
 
+.nav-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.2rem;
+  padding: 0.42rem 0.82rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+}
+
+.nav-pill:hover {
+  color: var(--accent-ink);
+  border-color: rgba(16, 163, 127, 0.3);
+  background: var(--accent-soft);
+}
+
 .subtle-button {
   appearance: none;
   border: 1px solid var(--line-strong);
@@ -139,6 +160,7 @@ pre,
 }
 
 .hero-card,
+.project-panel,
 .section-card,
 .metric-card,
 .error-card {
@@ -235,6 +257,267 @@ pre,
   display: none;
 }
 
+.project-panel {
+  border-radius: 16px;
+  padding: 1rem;
+}
+
+.project-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.project-title {
+  margin: 0;
+  font-size: 1.1rem;
+  line-height: 1.2;
+  font-weight: 750;
+}
+
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.8rem;
+  margin: 0;
+}
+
+.project-grid div {
+  min-width: 0;
+}
+
+.project-grid dt {
+  margin: 0 0 0.18rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.project-grid dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.92rem;
+}
+
+.project-path {
+  display: block;
+  max-width: 100%;
+}
+
+.review-console {
+  display: grid;
+  gap: 1rem;
+}
+
+.console-form {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.7fr) minmax(9rem, 0.45fr) minmax(18rem, 1.6fr) auto;
+  gap: 0.8rem;
+  align-items: end;
+}
+
+.console-field {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.console-field span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.console-field select,
+.console-field textarea,
+.console-field input {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.58rem 0.7rem;
+  box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.03);
+}
+
+.console-field textarea {
+  resize: vertical;
+  min-height: 4.2rem;
+}
+
+.console-log {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.console-message {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.58);
+  padding: 0.75rem;
+}
+
+.console-message header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: baseline;
+  margin-bottom: 0.35rem;
+}
+
+.console-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.console-role {
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.console-message-human {
+  border-color: rgba(16, 163, 127, 0.28);
+  background: var(--accent-soft);
+}
+
+.console-message-user {
+  border-color: rgba(16, 163, 127, 0.28);
+  background: var(--accent-soft);
+}
+
+.issue-creator-grid {
+  display: grid;
+  grid-template-columns: minmax(18rem, 0.82fr) minmax(0, 1.58fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.intake-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.intake-form,
+.intake-message-form {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.session-list {
+  display: grid;
+  gap: 0.55rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+}
+
+.session-list h3,
+.scan-summary h3,
+.intake-chat h3,
+.draft-panel h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+
+.session-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: center;
+  width: 100%;
+  min-height: 2.6rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.64);
+  color: var(--ink);
+  padding: 0.55rem 0.68rem;
+  text-align: left;
+  box-shadow: none;
+}
+
+.session-button:hover {
+  transform: none;
+  box-shadow: var(--shadow-sm);
+  border-color: var(--line-strong);
+  background: white;
+}
+
+.session-button span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-button-active {
+  border-color: rgba(16, 163, 127, 0.32);
+  background: var(--accent-soft);
+}
+
+.created-issue-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgba(16, 163, 127, 0.22);
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.created-issue-banner a {
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+
+.scan-summary,
+.intake-chat,
+.draft-panel {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.scan-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin: 0;
+}
+
+.scan-grid div {
+  min-width: 0;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.scan-grid dt {
+  margin: 0 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.scan-grid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .metric-grid {
   display: grid;
   gap: 0.85rem;
@@ -329,10 +612,43 @@ pre,
 .issue-stack,
 .session-stack,
 .detail-stack,
+.sandbox-stack,
 .token-stack {
   display: grid;
   gap: 0.24rem;
   min-width: 0;
+}
+
+.sandbox-name,
+.workspace-text {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.sandbox-host {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 0.82rem;
+}
+
+.sandbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.sandbox-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.7rem;
+  padding: 0.18rem 0.48rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  font-weight: 600;
 }
 
 .event-text {
@@ -388,6 +704,14 @@ pre,
   letter-spacing: -0.01em;
 }
 
+.issue-id-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: currentColor;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
 .issue-link {
   color: var(--muted);
   font-size: 0.86rem;
@@ -436,7 +760,9 @@ pre,
     padding: 1rem 0.85rem 2rem;
   }
 
-  .hero-grid {
+  .hero-grid,
+  .console-form,
+  .issue-creator-grid {
     grid-template-columns: 1fr;
   }
 
@@ -451,6 +777,10 @@ pre,
 
 @media (max-width: 560px) {
   .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .scan-grid {
     grid-template-columns: 1fr;
   }
 

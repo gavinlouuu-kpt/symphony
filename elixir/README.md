@@ -115,6 +115,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- `tracker.required_labels` is optional. When set, an issue must have every
+  configured label to dispatch or continue running. Label matching ignores
+  case and surrounding whitespace. A blank configured label matches no issue.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
@@ -159,6 +162,49 @@ codex:
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 
+### CUA sandboxes as workers
+
+Symphony can launch one CUA desktop sandbox per issue and control it from the host orchestrator.
+
+For repeatable one-instance-per-project deployments, start from
+`ops/project-template/README.md`.
+
+Build the reference CUA worker image:
+
+```bash
+cd elixir
+docker build -t symphony-cua-worker:latest support/cua_worker
+```
+
+Then set the worker provider in `WORKFLOW.md`:
+
+```yaml
+worker:
+  provider: cua
+  # Optional when your default SSH identity is not ~/.ssh/id_ed25519.
+  # ssh_options: ["IdentityFile=~/.ssh/id_ed25519"]
+cua:
+  image: symphony-cua-worker:latest
+  name_prefix: symphony
+  ssh_user: cua
+  delete_on_terminal: false
+```
+
+The CUA worker image is based on `trycua/cua-xfce`, preserves noVNC on port `6901` and the CUA
+computer-server API on port `8000`, and adds SSH on port `22` for Symphony. For each issue,
+Symphony creates or reuses a container named from the issue identifier, publishes deterministic
+host ports, and exposes sandbox links in the dashboard and JSON API.
+
+CUA uses a one-orchestrator model: Codex/app-server runs on the host, where VPN and
+OpenAI/GitHub/Linear auth already work, while shell, file, GUI, and video work happens inside the
+issue's CUA sandbox. Host-side Codex receives sandbox tools such as `sandbox_exec`,
+`sandbox_read_file`, and `sandbox_write_file`; those tools execute over SSH in the issue's CUA
+workspace. This keeps the sandbox disposable without copying Codex auth into every container.
+
+By default terminal issues retain their sandboxes for review; set
+`cua.delete_on_terminal: true` to remove them during terminal-state cleanup. If your SSH key is not
+`~/.ssh/id_ed25519`, set both `cua.ssh_authorized_key_path` and `worker.ssh_options`.
+
 ## Web dashboard
 
 The observability UI now runs on a minimal Phoenix stack:
@@ -167,6 +213,7 @@ The observability UI now runs on a minimal Phoenix stack:
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
+- Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
 ## Per-issue agent containers with virtual desktops
 
@@ -233,20 +280,35 @@ export LINEAR_API_KEY=...
 make e2e
 ```
 
+Run only the CUA-backed live scenario:
+
+```bash
+cd elixir
+export LINEAR_API_KEY=...
+make e2e-cua
+```
+
 Optional environment variables:
 
 - `SYMPHONY_LIVE_LINEAR_TEAM_KEY` defaults to `SYME2E`
 - `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
+- `OPENAI_API_KEY`, when set, is used by host-side Codex; it is not required inside the CUA worker
 
-`make e2e` runs two live scenarios:
+`make e2e` runs three live scenarios:
 - one with a local worker
 - one with SSH workers
+- one with a CUA desktop sandbox worker
 
 If `SYMPHONY_LIVE_SSH_WORKER_HOSTS` is unset, the SSH scenario uses `docker compose` to start two
 disposable SSH workers on `localhost:<port>`. The live test generates a temporary SSH keypair,
 mounts the host `~/.codex/auth.json` into each worker, verifies that Symphony can talk to them
 over real SSH, then runs the same orchestration flow against those worker addresses. This keeps
 the transport representative without depending on long-lived external machines.
+
+The CUA scenario builds `support/cua_worker` into `symphony-cua-worker:live-e2e` unless
+`SYMPHONY_LIVE_CUA_IMAGE` is set. It generates a temporary SSH key, configures
+`worker.provider: cua`, launches one CUA sandbox for the live issue, verifies noVNC/API/SSH health,
+and then runs the same real Codex + Linear workflow inside that sandbox.
 
 Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH hosts instead.
 

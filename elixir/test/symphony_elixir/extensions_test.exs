@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.{IssueIntake, Linear.Adapter}
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -36,6 +36,19 @@ defmodule SymphonyElixir.ExtensionsTest do
         _ ->
           Process.get({__MODULE__, :graphql_result})
       end
+    end
+  end
+
+  defmodule IssueIntakeLinearClient do
+    def graphql(query, variables) do
+      test_pid = Application.fetch_env!(:symphony_elixir, :issue_intake_test_pid)
+      results = Application.fetch_env!(:symphony_elixir, :issue_intake_test_results)
+      send(test_pid, {:issue_intake_graphql, query, variables})
+
+      Agent.get_and_update(results, fn
+        [result | rest] -> {result, rest}
+        [] -> {{:error, :unexpected_graphql}, []}
+      end)
     end
   end
 
@@ -74,6 +87,11 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
+    end
+
+    def handle_call({:review_console_message, request}, _from, state) do
+      reply = Keyword.get(state, :console, %{role: "orchestrator", body: "console ok"})
+      {:reply, {:ok, Map.put(reply, :request, request)}, state}
     end
   end
 
@@ -343,24 +361,25 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
              "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
+             "project" => %{
+               "tracker_kind" => "linear",
+               "project_slug" => "project",
+               "project_url" => "https://linear.app/project/project/issues",
+               "workspace_root" => Config.settings!().workspace.root,
+               "worker_provider" => "ssh",
+               "cua_host" => "127.0.0.1",
+               "dashboard_host" => "127.0.0.1"
+             },
              "running" => [
                %{
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
+                 "issue_url" => "https://example.org/issues/MT-HTTP",
                  "state" => "In Progress",
+                 "phase" => "builder",
                  "worker_host" => nil,
                  "workspace_path" => nil,
-                 "container" => %{
-                   "container_id" => "abc123",
-                   "container_name" => "symphony-agent-MT-HTTP",
-                   "image" => "symphony-agent-desktop:latest",
-                   "engine" => "docker",
-                   "workspace_mount" => "/workspace",
-                   "novnc_port" => 41_001,
-                   "novnc_url" => "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale",
-                   "recording" => true,
-                   "recordings_path" => "/workspaces/MT-HTTP/.symphony/recordings"
-                 },
+                 "sandbox" => nil,
                  "session_id" => "thread-http",
                  "turn_count" => 7,
                  "last_event" => "notification",
@@ -374,27 +393,69 @@ defmodule SymphonyElixir.ExtensionsTest do
                %{
                  "issue_id" => "issue-retry",
                  "issue_identifier" => "MT-RETRY",
+                 "issue_url" => "https://example.org/issues/MT-RETRY",
                  "attempt" => 2,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
+                 "phase" => "builder",
                  "worker_host" => nil,
-                 "workspace_path" => nil
+                 "workspace_path" => nil,
+                 "sandbox" => nil
                }
              ],
              "blocked" => [
                %{
                  "issue_id" => "issue-blocked",
                  "issue_identifier" => "MT-BLOCKED",
+                 "issue_url" => "https://example.org/issues/MT-BLOCKED",
                  "state" => "In Progress",
                  "error" => "codex turn requires operator input",
+                 "phase" => "builder",
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
-                 "container" => nil,
+                 "sandbox" => %{
+                   "name" => "symphony-mt-blocked",
+                   "provider" => "cua",
+                   "driver" => "docker",
+                   "source" => "docker",
+                   "status" => "running",
+                   "host" => "127.0.0.1",
+                   "ssh_target" => "cua@127.0.0.1:22123",
+                   "ssh_port" => 22123,
+                   "lifecycle" => "delete_on_terminal",
+                   "vnc_url" => "vnc://127.0.0.1:16123",
+                   "novnc_url" => "http://127.0.0.1:17123/",
+                   "api_url" => "http://127.0.0.1:18123/"
+                 },
                  "session_id" => "thread-blocked",
                  "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
                  "last_event" => "turn_input_required",
                  "last_message" => "turn blocked: waiting for user input",
                  "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
+               }
+             ],
+             "sandboxes" => [
+               %{
+                 "issue_id" => "issue-blocked",
+                 "issue_identifier" => "MT-BLOCKED",
+                 "issue_url" => "https://example.org/issues/MT-BLOCKED",
+                 "issue_status" => "blocked",
+                 "worker_host" => "dm-dev2",
+                 "workspace_path" => "/workspaces/MT-BLOCKED",
+                 "sandbox" => %{
+                   "name" => "symphony-mt-blocked",
+                   "provider" => "cua",
+                   "driver" => "docker",
+                   "source" => "docker",
+                   "status" => "running",
+                   "host" => "127.0.0.1",
+                   "ssh_target" => "cua@127.0.0.1:22123",
+                   "ssh_port" => 22123,
+                   "lifecycle" => "delete_on_terminal",
+                   "vnc_url" => "vnc://127.0.0.1:16123",
+                   "novnc_url" => "http://127.0.0.1:17123/",
+                   "api_url" => "http://127.0.0.1:18123/"
+                 }
                }
              ],
              "codex_totals" => %{
@@ -417,23 +478,15 @@ defmodule SymphonyElixir.ExtensionsTest do
                "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
                "host" => nil
              },
+             "sandbox" => nil,
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
                "worker_host" => nil,
                "workspace_path" => nil,
-               "container" => %{
-                 "container_id" => "abc123",
-                 "container_name" => "symphony-agent-MT-HTTP",
-                 "image" => "symphony-agent-desktop:latest",
-                 "engine" => "docker",
-                 "workspace_mount" => "/workspace",
-                 "novnc_port" => 41_001,
-                 "novnc_url" => "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale",
-                 "recording" => true,
-                 "recordings_path" => "/workspaces/MT-HTTP/.symphony/recordings"
-               },
+               "sandbox" => nil,
                "session_id" => "thread-http",
                "turn_count" => 7,
+               "phase" => "builder",
                "state" => "In Progress",
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",
@@ -476,6 +529,23 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{"queued" => true, "coalesced" => false, "operations" => ["poll", "reconcile"]} =
              json_response(conn, 202)
+
+    conn =
+      post(build_conn(), "/api/v1/console", %{
+        "target" => "reviewer",
+        "issue_identifier" => "MT-HTTP",
+        "body" => "review this"
+      })
+
+    assert %{
+             "role" => "orchestrator",
+             "body" => "console ok",
+             "request" => %{
+               "target" => "reviewer",
+               "issue_identifier" => "MT-HTTP",
+               "body" => "review this"
+             }
+           } = json_response(conn, 202)
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -486,6 +556,9 @@ defmodule SymphonyElixir.ExtensionsTest do
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(get(build_conn(), "/api/v1/refresh"), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+
+    assert json_response(get(build_conn(), "/api/v1/console"), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(post(build_conn(), "/", %{}), 405) ==
@@ -506,6 +579,14 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
 
     assert json_response(post(build_conn(), "/api/v1/refresh", %{}), 503) ==
+             %{
+               "error" => %{
+                 "code" => "orchestrator_unavailable",
+                 "message" => "Orchestrator is unavailable"
+               }
+             }
+
+    assert json_response(post(build_conn(), "/api/v1/console", %{}), 503) ==
              %{
                "error" => %{
                  "code" => "orchestrator_unavailable",
@@ -546,7 +627,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     html = html_response(get(build_conn(), "/"), 200)
-    assert html =~ "/dashboard.css"
+    assert html =~ ~r|/dashboard\.css\?v=[0-9a-f]{12}|
+
+    assert html =~
+             ~r|<link rel="icon" type="image/png" sizes="128x128" href="/favicon\.png\?v=[0-9a-f]{12}">|
+
     assert html =~ "/vendor/phoenix_html/phoenix_html.js"
     assert html =~ "/vendor/phoenix/phoenix.js"
     assert html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
@@ -558,6 +643,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+    assert dashboard_css =~ "text-decoration-thickness: 1px"
+
+    favicon_conn = get(build_conn(), "/favicon.png")
+    assert response(favicon_conn, 200) == File.read!("priv/static/favicon.png")
+    assert Plug.Conn.get_resp_header(favicon_conn, "content-type") == ["image/png; charset=utf-8"]
 
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
@@ -590,10 +680,22 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
+    assert html =~ "project Dashboard"
+    assert html =~ "Workspace root"
+    assert html =~ "https://linear.app/project/project/issues"
+    assert html =~ "Review console"
+    assert html =~ "Private issue-scoped messages"
+    assert html =~ "Create issue"
+    assert html =~ ~s(href="/issues/new")
+    assert html =~ "Orchestrator"
+    assert html =~ "Reviewer"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
+    assert html =~ ~s(href="https://example.org/issues/MT-HTTP")
+    assert html =~ ~s(href="https://example.org/issues/MT-RETRY")
+    assert html =~ ~s(href="https://example.org/issues/MT-BLOCKED")
+    assert html =~ ~s(aria-label="Open MT-HTTP in the issue tracker")
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
     assert html =~ "Runtime"
@@ -601,6 +703,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Offline"
     assert html =~ "Copy ID"
     assert html =~ "Codex update"
+    assert html =~ "CUA sandboxes"
+    assert html =~ "symphony-mt-blocked"
+    assert html =~ "Open noVNC"
+    assert html =~ "closes when terminal"
+    assert html =~ "cua@127.0.0.1:22123"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -608,24 +715,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
 
-    assert html =~ "Agent desktops"
-    assert html =~ "desktop-frame"
-    assert html =~ "http://127.0.0.1:41001/vnc.html?autoconnect=1&amp;resize=scale"
-    assert html =~ "symphony-agent-MT-HTTP"
-    refute html =~ "desktop-overlay"
-
-    focused_html = render_click(view, "focus_desktop", %{"issue" => "MT-HTTP"})
-    assert focused_html =~ "desktop-overlay"
-    assert focused_html =~ "desktop-frame-focused-MT-HTTP"
-
-    closed_html = render_click(view, "close_desktop", %{})
-    refute closed_html =~ "desktop-overlay"
-
     updated_snapshot =
       put_in(snapshot.running, [
         %{
           issue_id: "issue-http",
           identifier: "MT-HTTP",
+          issue_url: "javascript:alert('nope')",
           state: "In Progress",
           session_id: "thread-http",
           turn_count: 8,
@@ -660,6 +755,179 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_eventually(fn ->
       render(view) =~ "agent message content streaming: structured update"
     end)
+
+    refute render(view) =~ "javascript:alert"
+  end
+
+  test "issue creator liveview renders project context and intake controls" do
+    orchestrator_name = Module.concat(__MODULE__, :IssueCreatorOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/issues/new")
+
+    assert html =~ "Issue Creator"
+    assert html =~ "Scan and Draft"
+    assert html =~ "New request"
+    assert html =~ "project"
+    assert html =~ ~s(href="/")
+  end
+
+  test "issue intake creates a Linear issue from the reviewed draft" do
+    ensure_issue_intake_running()
+    previous_state = :sys.get_state(IssueIntake)
+    previous_results = Application.get_env(:symphony_elixir, :issue_intake_test_results)
+    previous_test_pid = Application.get_env(:symphony_elixir, :issue_intake_test_pid)
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    {:ok, results} =
+      Agent.start_link(fn ->
+        [
+          {:ok,
+           %{
+             "data" => %{
+               "projects" => %{
+                 "nodes" => [
+                   %{
+                     "id" => "project-1",
+                     "name" => "Project",
+                     "teams" => %{
+                       "nodes" => [
+                         %{
+                           "id" => "team-1",
+                           "key" => "KIN",
+                           "states" => %{
+                             "nodes" => [
+                               %{"id" => "state-todo", "name" => "Todo"},
+                               %{"id" => "state-review", "name" => "In Review"}
+                             ]
+                           }
+                         }
+                       ]
+                     }
+                   }
+                 ]
+               }
+             }
+           }},
+          {:ok,
+           %{
+             "data" => %{
+               "issueCreate" => %{
+                 "success" => true,
+                 "issue" => %{
+                   "id" => "issue-101",
+                   "identifier" => "KIN-101",
+                   "title" => "Add intake workflow",
+                   "url" => "https://linear.app/kingsphase/issue/KIN-101/add-intake-workflow",
+                   "state" => %{"name" => "Todo"}
+                 }
+               }
+             }
+           }}
+        ]
+      end)
+
+    Application.put_env(:symphony_elixir, :linear_client_module, IssueIntakeLinearClient)
+    Application.put_env(:symphony_elixir, :issue_intake_test_results, results)
+    Application.put_env(:symphony_elixir, :issue_intake_test_pid, self())
+
+    on_exit(fn ->
+      :sys.replace_state(IssueIntake, fn _state -> previous_state end)
+
+      if is_nil(previous_results) do
+        Application.delete_env(:symphony_elixir, :issue_intake_test_results)
+      else
+        Application.put_env(:symphony_elixir, :issue_intake_test_results, previous_results)
+      end
+
+      if is_nil(previous_test_pid) do
+        Application.delete_env(:symphony_elixir, :issue_intake_test_pid)
+      else
+        Application.put_env(:symphony_elixir, :issue_intake_test_pid, previous_test_pid)
+      end
+
+      if Process.alive?(results), do: Agent.stop(results)
+    end)
+
+    session = %{
+      id: 1,
+      kind: "feature",
+      title: "Add intake workflow",
+      original_request: "Create a planning page.",
+      status: "drafting",
+      messages: [%{role: "user", body: "Create a planning page.", created_at: now}],
+      scan: %{repo_url: "repo", branch: "main", file_count: 2, top_level: [], languages: [], important_files: [], test_hints: []},
+      draft: "Reviewed task draft",
+      created_issue: nil,
+      created_at: now,
+      updated_at: now
+    }
+
+    :sys.replace_state(IssueIntake, fn _state -> %IssueIntake{sessions: [session], next_id: 2} end)
+
+    assert {:ok, updated} = IssueIntake.create_linear_issue(1)
+    assert updated.created_issue.identifier == "KIN-101"
+    assert updated.created_issue.state == "Todo"
+
+    assert_receive {:issue_intake_graphql, project_query, %{projectSlug: "project"}}
+    assert project_query =~ "SymphonyIssueIntakeProject"
+
+    assert_receive {:issue_intake_graphql, create_query, create_variables}
+    assert create_query =~ "SymphonyIssueIntakeCreateIssue"
+    assert create_variables.title == "Add intake workflow"
+    assert create_variables.description == "Reviewed task draft"
+    assert create_variables.stateId == "state-todo"
+  end
+
+  test "review console answers retained sandbox questions with dashboard context" do
+    payload = %{
+      running: [],
+      retrying: [],
+      blocked: [],
+      sandboxes: [
+        %{
+          issue_identifier: "KIN-94",
+          issue_status: "retained",
+          workspace_path: "/home/cua/workspaces/KIN-94",
+          sandbox: %{novnc_url: "http://100.81.210.49:17678/"},
+          evidence: [
+            %{kind: "video", filename: "KIN-94-visible-smoke.mp4"},
+            %{kind: "log", filename: "KIN-94-visible-exec.log"}
+          ]
+        }
+      ]
+    }
+
+    assert {"reviewer", reviewer_body} =
+             SymphonyElixirWeb.DashboardLive.console_response_for_test(
+               payload,
+               "KIN-94",
+               "reviewer",
+               "what test has been done?"
+             )
+
+    assert reviewer_body =~ "retained for inspection"
+    assert reviewer_body =~ "video: KIN-94-visible-smoke.mp4"
+    assert reviewer_body =~ "log: KIN-94-visible-exec.log"
+    assert reviewer_body =~ "I cannot start or talk to a live reviewer"
+
+    assert {"orchestrator", orchestrator_body} =
+             SymphonyElixirWeb.DashboardLive.console_response_for_test(
+               payload,
+               "KIN-94",
+               "orchestrator",
+               "status"
+             )
+
+    assert orchestrator_body =~ "Workspace: /home/cua/workspaces/KIN-94"
+    assert orchestrator_body =~ "noVNC: http://100.81.210.49:17678/"
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do
@@ -738,35 +1006,46 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
   end
 
-  test "http server resolves the tailscale host shorthand" do
-    orchestrator_name = Module.concat(__MODULE__, :TailscaleHostOrchestrator)
+  test "phoenix observability api links and serves local evidence artifacts" do
+    evidence_root = Path.join(System.tmp_dir!(), "symphony-evidence-#{System.unique_integer([:positive])}")
+    previous_evidence_root = System.get_env("SYMPHONY_EVIDENCE_ROOT")
+    File.mkdir_p!(evidence_root)
+    File.write!(Path.join(evidence_root, "MT-BLOCKED-visible-smoke.mp4"), "video")
+    File.write!(Path.join(evidence_root, "OTHER-visible-smoke.mp4"), "other")
+    System.put_env("SYMPHONY_EVIDENCE_ROOT", evidence_root)
 
-    refresh = %{
-      queued: true,
-      coalesced: false,
-      requested_at: DateTime.utc_now(),
-      operations: ["poll"]
-    }
-
-    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: static_snapshot(), refresh: refresh})
-
-    Application.put_env(:symphony_elixir, :tailscale_command_runner, fn ["ip", "-4"] ->
-      {:ok, {"127.0.0.1\n", 0}}
+    on_exit(fn ->
+      restore_env("SYMPHONY_EVIDENCE_ROOT", previous_evidence_root)
+      File.rm_rf(evidence_root)
     end)
 
-    on_exit(fn -> Application.delete_env(:symphony_elixir, :tailscale_command_runner) end)
+    orchestrator_name = Module.concat(__MODULE__, :EvidenceOrchestrator)
 
-    start_supervised!({HttpServer, [host: "tailscale", port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 50]})
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
 
-    port = wait_for_bound_port()
-    response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
-    assert response.status == 200
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    Application.put_env(:symphony_elixir, :tailscale_command_runner, fn _args ->
-      {:error, :tailscale_not_found}
-    end)
+    state_payload = json_response(get(build_conn(), "/api/v1/state"), 200)
 
-    assert {:error, :tailscale_not_found} = HttpServer.start_link(host: "tailscale", port: 0)
+    assert [
+             %{
+               "filename" => "MT-BLOCKED-visible-smoke.mp4",
+               "href" => "/evidence/MT-BLOCKED-visible-smoke.mp4",
+               "kind" => "video",
+               "size_bytes" => 5
+             }
+           ] = get_in(state_payload, ["sandboxes", Access.at(0), "evidence"])
+
+    evidence_response = get(build_conn(), "/evidence/MT-BLOCKED-visible-smoke.mp4")
+    assert response(evidence_response, 200) == "video"
+    assert Plug.Conn.get_resp_header(evidence_response, "content-type") == ["video/mp4; charset=utf-8"]
+
+    assert response(get(build_conn(), "/evidence/OTHER-visible-smoke.mp4"), 200) == "other"
+    assert response(get(build_conn(), "/evidence/.."), 404) == "Not Found"
   end
 
   defp start_test_endpoint(overrides) do
@@ -786,20 +1065,10 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           issue_id: "issue-http",
           identifier: "MT-HTTP",
+          issue_url: "https://example.org/issues/MT-HTTP",
           state: "In Progress",
           session_id: "thread-http",
           turn_count: 7,
-          container: %{
-            container_id: "abc123",
-            container_name: "symphony-agent-MT-HTTP",
-            image: "symphony-agent-desktop:latest",
-            engine: "docker",
-            workspace_mount: "/workspace",
-            novnc_port: 41_001,
-            novnc_url: "http://127.0.0.1:41001/vnc.html?autoconnect=1&resize=scale",
-            recording: true,
-            recordings_path: "/workspaces/MT-HTTP/.symphony/recordings"
-          },
           codex_app_server_pid: nil,
           last_codex_message: "rendered",
           last_codex_timestamp: nil,
@@ -814,6 +1083,7 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           issue_id: "issue-retry",
           identifier: "MT-RETRY",
+          issue_url: "https://example.org/issues/MT-RETRY",
           attempt: 2,
           due_in_ms: 2_000,
           error: "boom"
@@ -823,6 +1093,7 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           issue_id: "issue-blocked",
           identifier: "MT-BLOCKED",
+          issue_url: "https://example.org/issues/MT-BLOCKED",
           state: "In Progress",
           error: "codex turn requires operator input",
           worker_host: "dm-dev2",
@@ -835,7 +1106,21 @@ defmodule SymphonyElixir.ExtensionsTest do
             message: %{"method" => "turn/input_required"},
             timestamp: DateTime.utc_now()
           },
-          last_codex_timestamp: DateTime.utc_now()
+          last_codex_timestamp: DateTime.utc_now(),
+          sandbox: %{
+            name: "symphony-mt-blocked",
+            provider: "cua",
+            driver: "docker",
+            source: "docker",
+            status: "running",
+            host: "127.0.0.1",
+            ssh_target: "cua@127.0.0.1:22123",
+            ssh_port: 22123,
+            lifecycle: "delete_on_terminal",
+            vnc_url: "vnc://127.0.0.1:16123",
+            novnc_url: "http://127.0.0.1:17123/",
+            api_url: "http://127.0.0.1:18123/"
+          }
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
@@ -872,6 +1157,15 @@ defmodule SymphonyElixir.ExtensionsTest do
         {:ok, _pid} -> :ok
         {:error, {:already_started, _pid}} -> :ok
       end
+    end
+  end
+
+  defp ensure_issue_intake_running do
+    if Process.whereis(IssueIntake) do
+      :ok
+    else
+      start_supervised!(IssueIntake)
+      :ok
     end
   end
 end

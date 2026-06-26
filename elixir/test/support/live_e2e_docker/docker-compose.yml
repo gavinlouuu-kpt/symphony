@@ -8,6 +8,16 @@ services:
     volumes:
       - ${SYMPHONY_LIVE_DOCKER_AUTHORIZED_KEY}:/run/symphony/ssh/authorized_key.pub:ro
       - ${SYMPHONY_LIVE_DOCKER_AUTH_JSON}:/root/.codex/auth.json:ro
+      - ${SYMPHONY_LIVE_DOCKER_CONFIG_TOML}:/run/symphony/codex/config.toml:ro
+    environment:
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+      http_proxy: ${http_proxy:-}
+      https_proxy: ${https_proxy:-}
+      all_proxy: ${all_proxy:-}
+      no_proxy: ${no_proxy:-}
 
   worker2:
     build:
@@ -18,3 +28,13 @@ services:
     volumes:
       - ${SYMPHONY_LIVE_DOCKER_AUTHORIZED_KEY}:/run/symphony/ssh/authorized_key.pub:ro
       - ${SYMPHONY_LIVE_DOCKER_AUTH_JSON}:/root/.codex/auth.json:ro
+      - ${SYMPHONY_LIVE_DOCKER_CONFIG_TOML}:/run/symphony/codex/config.toml:ro
+    environment:
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+      http_proxy: ${http_proxy:-}
+      https_proxy: ${https_proxy:-}
+      all_proxy: ${all_proxy:-}
+      no_proxy: ${no_proxy:-}

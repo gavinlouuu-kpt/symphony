@@ -12,6 +12,9 @@ defmodule SymphonyElixir.LiveE2ETest do
   @docker_worker_count 2
   @docker_support_dir Path.expand("../support/live_e2e_docker", __DIR__)
   @docker_compose_file Path.join(@docker_support_dir, "docker-compose.yml")
+  @docker_host_compose_file Path.join(@docker_support_dir, "docker-compose.host.yml")
+  @cua_worker_support_dir Path.expand("../../support/cua_worker", __DIR__)
+  @cua_default_image "symphony-cua-worker:live-e2e"
   @result_file "LIVE_E2E_RESULT.txt"
   @live_e2e_skip_reason if(System.get_env("SYMPHONY_RUN_LIVE_E2E") != "1",
                           do: "set SYMPHONY_RUN_LIVE_E2E=1 to enable the real Linear/Codex end-to-end test"
@@ -128,6 +131,12 @@ defmodule SymphonyElixir.LiveE2ETest do
   @tag skip: @live_e2e_skip_reason
   test "creates a real Linear project and issue with an ssh worker" do
     run_live_issue_flow!(:ssh)
+  end
+
+  @tag :cua
+  @tag skip: @live_e2e_skip_reason
+  test "creates a real Linear project and issue with a CUA sandbox worker" do
+    run_live_issue_flow!(:cua)
   end
 
   defp fetch_team!(team_key) do
@@ -435,7 +444,7 @@ defmodule SymphonyElixir.LiveE2ETest do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
 
-  defp run_live_issue_flow!(backend) when backend in [:local, :ssh] do
+  defp run_live_issue_flow!(backend) when backend in [:local, :ssh, :cua] do
     run_id = "symphony-live-e2e-#{backend}-#{System.unique_integer([:positive])}"
     test_root = Path.join(System.tmp_dir!(), run_id)
     workflow_root = Path.join(test_root, "workflow")
@@ -454,14 +463,22 @@ defmodule SymphonyElixir.LiveE2ETest do
 
       Workflow.set_workflow_file_path(workflow_file)
 
-      write_workflow_file!(workflow_file,
-        tracker_api_token: "$LINEAR_API_KEY",
-        tracker_project_slug: "bootstrap",
-        workspace_root: worker_setup.workspace_root,
-        worker_ssh_hosts: worker_setup.ssh_worker_hosts,
-        codex_command: worker_setup.codex_command,
-        codex_approval_policy: "never",
-        observability_enabled: false
+      write_workflow_file!(
+        workflow_file,
+        Keyword.merge(
+          [
+            tracker_api_token: "$LINEAR_API_KEY",
+            tracker_project_slug: "bootstrap",
+            workspace_root: worker_setup.workspace_root,
+            worker_ssh_hosts: worker_setup.ssh_worker_hosts,
+            codex_command: worker_setup.codex_command,
+            codex_approval_policy: "never",
+            codex_thread_sandbox: live_codex_thread_sandbox(),
+            codex_turn_sandbox_policy: live_codex_turn_sandbox_policy(),
+            observability_enabled: false
+          ],
+          worker_overrides(worker_setup)
+        )
       )
 
       team = fetch_team!(team_key)
@@ -483,24 +500,33 @@ defmodule SymphonyElixir.LiveE2ETest do
           "Symphony live e2e #{backend} issue for #{project["name"]}"
         )
 
-      write_workflow_file!(workflow_file,
-        tracker_api_token: "$LINEAR_API_KEY",
-        tracker_project_slug: project["slugId"],
-        tracker_active_states: active_state_names(team),
-        tracker_terminal_states: terminal_states,
-        workspace_root: worker_setup.workspace_root,
-        worker_ssh_hosts: worker_setup.ssh_worker_hosts,
-        codex_command: worker_setup.codex_command,
-        codex_approval_policy: "never",
-        codex_turn_timeout_ms: 600_000,
-        codex_stall_timeout_ms: 600_000,
-        observability_enabled: false,
-        prompt: live_prompt(project["slugId"])
+      write_workflow_file!(
+        workflow_file,
+        Keyword.merge(
+          [
+            tracker_api_token: "$LINEAR_API_KEY",
+            tracker_project_slug: project["slugId"],
+            tracker_active_states: active_state_names(team),
+            tracker_terminal_states: terminal_states,
+            workspace_root: worker_setup.workspace_root,
+            worker_ssh_hosts: worker_setup.ssh_worker_hosts,
+            codex_command: worker_setup.codex_command,
+            codex_approval_policy: "never",
+            codex_thread_sandbox: live_codex_thread_sandbox(),
+            codex_turn_sandbox_policy: live_codex_turn_sandbox_policy(),
+            codex_turn_timeout_ms: 600_000,
+            codex_stall_timeout_ms: 600_000,
+            observability_enabled: false,
+            prompt: live_prompt(project["slugId"])
+          ],
+          worker_overrides(worker_setup)
+        )
       )
 
       assert :ok = AgentRunner.run(issue, self(), max_turns: 3)
 
       runtime_info = receive_runtime_info!(issue.id)
+      assert_live_worker_runtime!(backend, runtime_info)
 
       assert read_worker_result!(runtime_info, @result_file) ==
                expected_result(issue.identifier, project["slugId"])
@@ -512,16 +538,16 @@ defmodule SymphonyElixir.LiveE2ETest do
       assert :ok = complete_project(project["id"], completed_project_status["id"])
     after
       restart_orchestrator_if_needed()
-      cleanup_live_worker_setup(worker_setup)
+      maybe_cleanup_live_worker_setup(worker_setup, test_root, workflow_file)
       Workflow.set_workflow_file_path(original_workflow_path)
-      File.rm_rf(test_root)
+      maybe_remove_live_test_root(test_root)
     end
   end
 
   defp live_worker_setup!(:local, _run_id, test_root) when is_binary(test_root) do
     %{
       cleanup: fn -> :ok end,
-      codex_command: "codex app-server",
+      codex_command: live_codex_command(),
       ssh_worker_hosts: [],
       workspace_root: Path.join(test_root, "workspaces")
     }
@@ -537,11 +563,99 @@ defmodule SymphonyElixir.LiveE2ETest do
     end
   end
 
+  defp live_worker_setup!(:cua, run_id, test_root) when is_binary(run_id) and is_binary(test_root) do
+    ensure_docker_available!()
+
+    ssh_root = Path.join(test_root, "live-cua-ssh")
+    key_path = Path.join(ssh_root, "id_ed25519")
+    image = System.get_env("SYMPHONY_LIVE_CUA_IMAGE", @cua_default_image)
+    name_prefix = docker_project_name(run_id)
+    previous_ssh_config = System.get_env("SYMPHONY_SSH_CONFIG")
+
+    File.mkdir_p!(ssh_root)
+    generate_ssh_keypair!(key_path)
+    maybe_build_cua_worker_image!(image)
+    System.delete_env("SYMPHONY_SSH_CONFIG")
+
+    %{
+      cleanup: fn ->
+        restore_env("SYMPHONY_SSH_CONFIG", previous_ssh_config)
+        remove_cua_sandboxes(name_prefix)
+      end,
+      codex_command: live_codex_command(),
+      ssh_worker_hosts: [],
+      workspace_root: "~/.#{run_id}/workspaces",
+      worker_overrides: [
+        worker_provider: "cua",
+        worker_ssh_options: [
+          "IdentityFile=#{key_path}",
+          "IdentitiesOnly=yes",
+          "BatchMode=yes",
+          "StrictHostKeyChecking=no",
+          "UserKnownHostsFile=/dev/null",
+          "ConnectTimeout=5",
+          "LogLevel=ERROR"
+        ],
+        cua_image: image,
+        cua_name_prefix: name_prefix,
+        cua_ssh_user: "cua",
+        cua_ssh_authorized_key_path: key_path <> ".pub",
+        cua_delete_on_terminal: false,
+        cua_wait_for_ssh: true,
+        cua_launch_timeout_ms: 120_000
+      ]
+    }
+  end
+
+  defp worker_overrides(%{worker_overrides: overrides}) when is_list(overrides), do: overrides
+  defp worker_overrides(_worker_setup), do: []
+
+  defp assert_live_worker_runtime!(:cua, %{worker_host: worker_host, sandbox: sandbox})
+       when is_binary(worker_host) and is_map(sandbox) do
+    assert worker_host == Map.fetch!(sandbox, :ssh_target)
+    assert Map.fetch!(sandbox, :provider) == "cua"
+    assert Map.fetch!(sandbox, :driver) == "docker"
+    assert Map.fetch!(sandbox, :novnc_url) =~ "http://127.0.0.1:"
+    assert Map.fetch!(sandbox, :api_url) =~ "http://127.0.0.1:"
+
+    assert_cua_http_ok!(Map.fetch!(sandbox, :novnc_url))
+    assert_cua_status_ok!(Map.fetch!(sandbox, :api_url))
+
+    assert {:ok, {"cua-ready", 0}} =
+             SSH.run(worker_host, "printf cua-ready", stderr_to_stdout: true)
+  end
+
+  defp assert_live_worker_runtime!(_backend, _runtime_info), do: :ok
+
+  defp maybe_cleanup_live_worker_setup(worker_setup, test_root, workflow_file)
+       when is_map(worker_setup) and is_binary(test_root) and is_binary(workflow_file) do
+    if live_keep_artifacts?() do
+      IO.puts(
+        "LIVE_E2E_ARTIFACTS test_root=#{test_root} workflow_file=#{workflow_file} " <>
+          "workspace_root=#{worker_setup.workspace_root} ssh_worker_hosts=#{inspect(worker_setup.ssh_worker_hosts)}"
+      )
+    else
+      cleanup_live_worker_setup(worker_setup)
+    end
+  end
+
   defp cleanup_live_worker_setup(%{cleanup: cleanup}) when is_function(cleanup, 0) do
     cleanup.()
   end
 
   defp cleanup_live_worker_setup(_worker_setup), do: :ok
+
+  defp maybe_remove_live_test_root(test_root) when is_binary(test_root) do
+    unless live_keep_artifacts?() do
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp live_keep_artifacts? do
+    System.get_env("SYMPHONY_LIVE_E2E_KEEP_ARTIFACTS", "")
+    |> String.downcase()
+    |> Kernel.in(["1", "true", "yes"])
+  end
 
   defp restart_orchestrator_if_needed do
     if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
@@ -559,7 +673,7 @@ defmodule SymphonyElixir.LiveE2ETest do
 
     %{
       cleanup: fn -> cleanup_remote_test_root(remote_test_root, ssh_worker_hosts) end,
-      codex_command: "codex app-server",
+      codex_command: live_codex_command(),
       ssh_worker_hosts: ssh_worker_hosts,
       workspace_root: remote_workspace_root
     }
@@ -597,7 +711,7 @@ defmodule SymphonyElixir.LiveE2ETest do
             cleanup_remote_test_root(remote_test_root, worker_hosts)
             base_cleanup.()
           end,
-          codex_command: "codex app-server",
+          codex_command: live_codex_command(),
           ssh_worker_hosts: worker_hosts,
           workspace_root: remote_workspace_root
         }
@@ -628,6 +742,30 @@ defmodule SymphonyElixir.LiveE2ETest do
     |> String.split(",", trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
+  end
+
+  defp live_codex_command do
+    System.get_env("SYMPHONY_LIVE_CODEX_COMMAND", "codex app-server")
+  end
+
+  defp live_codex_thread_sandbox do
+    if live_codex_danger_full_access?() do
+      "danger-full-access"
+    else
+      "workspace-write"
+    end
+  end
+
+  defp live_codex_turn_sandbox_policy do
+    if live_codex_danger_full_access?() do
+      %{"type" => "dangerFullAccess"}
+    end
+  end
+
+  defp live_codex_danger_full_access? do
+    System.get_env("SYMPHONY_LIVE_CODEX_DANGER_FULL_ACCESS", "")
+    |> String.downcase()
+    |> Kernel.in(["1", "true", "yes"])
   end
 
   defp cleanup_remote_test_root(test_root, ssh_worker_hosts)
@@ -739,14 +877,130 @@ defmodule SymphonyElixir.LiveE2ETest do
        when is_list(worker_ports) and is_binary(auth_json_path) and is_binary(authorized_key_path) do
     [
       {"SYMPHONY_LIVE_DOCKER_AUTH_JSON", auth_json_path},
+      {"SYMPHONY_LIVE_DOCKER_CONFIG_TOML", Path.join(System.user_home!(), ".codex/config.toml")},
       {"SYMPHONY_LIVE_DOCKER_AUTHORIZED_KEY", authorized_key_path},
       {"SYMPHONY_LIVE_DOCKER_WORKER_1_PORT", Integer.to_string(Enum.at(worker_ports, 0))},
       {"SYMPHONY_LIVE_DOCKER_WORKER_2_PORT", Integer.to_string(Enum.at(worker_ports, 1))}
     ]
+    |> Kernel.++(proxy_env())
+  end
+
+  defp proxy_env do
+    [
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "NO_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy",
+      "no_proxy"
+    ]
+    |> Enum.map(fn key -> {key, System.get_env(key, "")} end)
+  end
+
+  defp ensure_docker_available! do
+    case System.find_executable("docker") do
+      nil ->
+        flunk("CUA live e2e requires `docker` on PATH")
+
+      executable ->
+        case System.cmd(executable, ["info"], stderr_to_stdout: true) do
+          {_output, 0} ->
+            :ok
+
+          {output, status} ->
+            flunk("CUA live e2e requires a running Docker daemon (status #{status}): #{inspect(output)}")
+        end
+    end
+  end
+
+  defp maybe_build_cua_worker_image!(image) when is_binary(image) do
+    case System.get_env("SYMPHONY_LIVE_CUA_IMAGE") do
+      custom when is_binary(custom) and custom != "" ->
+        :ok
+
+      _ ->
+        build_cua_worker_image!(image)
+    end
+  end
+
+  defp build_cua_worker_image!(image) when is_binary(image) do
+    case System.cmd("docker", ["build", "-t", image, @cua_worker_support_dir], stderr_to_stdout: true) do
+      {_output, 0} ->
+        :ok
+
+      {output, status} ->
+        flunk("failed to build CUA live worker image #{image} (status #{status}): #{inspect(output)}")
+    end
+  end
+
+  defp remove_cua_sandboxes(name_prefix) when is_binary(name_prefix) do
+    case System.cmd(
+           "docker",
+           [
+             "ps",
+             "-aq",
+             "--filter",
+             "label=symphony.cua=true",
+             "--filter",
+             "name=#{name_prefix}"
+           ],
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        ids = String.split(output, "\n", trim: true)
+
+        if ids != [] do
+          _ = System.cmd("docker", ["rm", "-f" | ids], stderr_to_stdout: true)
+        end
+
+        :ok
+
+      {_output, _status} ->
+        :ok
+    end
+  end
+
+  defp assert_cua_http_ok!(url) when is_binary(url) do
+    case Req.get(url, receive_timeout: 10_000) do
+      {:ok, %Req.Response{status: status}} when status in 200..399 ->
+        :ok
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        flunk("expected CUA noVNC URL #{url} to return 2xx/3xx, got #{status}: #{inspect(body)}")
+
+      {:error, reason} ->
+        flunk("failed to reach CUA noVNC URL #{url}: #{inspect(reason)}")
+    end
+  end
+
+  defp assert_cua_status_ok!(api_url) when is_binary(api_url) do
+    url = String.trim_trailing(api_url, "/") <> "/status"
+
+    case Req.get(url, receive_timeout: 10_000) do
+      {:ok, %Req.Response{status: 200, body: body}} ->
+        assert %{"status" => "ok"} = decode_json_body(body)
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        flunk("expected CUA API status #{url} to return 200, got #{status}: #{inspect(body)}")
+
+      {:error, reason} ->
+        flunk("failed to reach CUA API status #{url}: #{inspect(reason)}")
+    end
+  end
+
+  defp decode_json_body(body) when is_map(body), do: body
+
+  defp decode_json_body(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, decoded} -> decoded
+      {:error, reason} -> flunk("expected JSON body, got decode error #{inspect(reason)}: #{inspect(body)}")
+    end
   end
 
   defp docker_compose_up!(project_name, env) when is_binary(project_name) and is_list(env) do
-    args = ["compose", "-f", @docker_compose_file, "-p", project_name, "up", "-d", "--build"]
+    args = ["compose", "-f", docker_compose_file(), "-p", project_name, "up", "-d", "--build"]
 
     case System.cmd("docker", args, cd: @docker_support_dir, env: env, stderr_to_stdout: true) do
       {_output, 0} ->
@@ -761,13 +1015,27 @@ defmodule SymphonyElixir.LiveE2ETest do
     _ =
       System.cmd(
         "docker",
-        ["compose", "-f", @docker_compose_file, "-p", project_name, "down", "-v", "--remove-orphans"],
+        ["compose", "-f", docker_compose_file(), "-p", project_name, "down", "-v", "--remove-orphans"],
         cd: @docker_support_dir,
         env: env,
         stderr_to_stdout: true
       )
 
     :ok
+  end
+
+  defp docker_compose_file do
+    if live_docker_host_network?() do
+      @docker_host_compose_file
+    else
+      @docker_compose_file
+    end
+  end
+
+  defp live_docker_host_network? do
+    System.get_env("SYMPHONY_LIVE_DOCKER_NETWORK_MODE", "")
+    |> String.downcase()
+    |> Kernel.in(["host", "system"])
   end
 
   defp wait_for_ssh_hosts!(worker_hosts) when is_list(worker_hosts) do

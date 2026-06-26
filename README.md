@@ -34,6 +34,9 @@ help with the setup:
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 
+For repeatable CUA deployments, the Elixir implementation includes a reusable one-project template
+at [elixir/ops/project-template](elixir/ops/project-template).
+
 ---
 
 ## License

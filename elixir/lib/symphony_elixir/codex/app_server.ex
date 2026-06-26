@@ -23,7 +23,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           thread_id: String.t(),
           workspace: Path.t(),
           worker_host: String.t() | nil,
-          container: map() | nil
+          dynamic_tool_context: map()
         }
 
   @spec run(Path.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -40,14 +40,16 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
-    container = Keyword.get(opts, :container)
+    workspace_root = Keyword.get(opts, :workspace_root)
+    dynamic_tool_context = Keyword.get(opts, :dynamic_tool_context, %{}) || %{}
 
-    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, container),
-         {:ok, port} <- start_port(expanded_workspace, worker_host, container) do
+    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, workspace_root),
+         {:ok, port} <- start_port(expanded_workspace, worker_host) do
       metadata = port_metadata(port, worker_host)
 
-      with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host, container),
-           {:ok, thread_id} <- do_start_session(port, expanded_workspace, session_policies) do
+      with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
+           {:ok, thread_id} <-
+             do_start_session(port, expanded_workspace, session_policies, dynamic_tool_context) do
         {:ok,
          %{
            port: port,
@@ -59,7 +61,7 @@ defmodule SymphonyElixir.Codex.AppServer do
            thread_id: thread_id,
            workspace: expanded_workspace,
            worker_host: worker_host,
-           container: container
+           dynamic_tool_context: dynamic_tool_context
          }}
       else
         {:error, reason} ->
@@ -78,7 +80,8 @@ defmodule SymphonyElixir.Codex.AppServer do
           auto_approve_requests: auto_approve_requests,
           turn_sandbox_policy: turn_sandbox_policy,
           thread_id: thread_id,
-          workspace: workspace
+          workspace: workspace,
+          dynamic_tool_context: dynamic_tool_context
         },
         prompt,
         issue,
@@ -88,7 +91,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     tool_executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
-        DynamicTool.execute(tool, arguments)
+        DynamicTool.execute(tool, arguments, sandbox_context: dynamic_tool_context[:sandbox])
       end)
 
     case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
@@ -147,28 +150,11 @@ defmodule SymphonyElixir.Codex.AppServer do
     stop_port(port)
   end
 
-  defp validate_workspace_cwd(workspace, _worker_host, %{container_name: container_name})
-       when is_binary(workspace) do
-    # Container workspaces are in-container mount paths; the host-side path
-    # safety checks do not apply, mirroring the remote worker behavior.
-    cond do
-      String.trim(workspace) == "" ->
-        {:error, {:invalid_workspace_cwd, :empty_container_workspace, container_name}}
+  defp validate_workspace_cwd(workspace, worker_host, workspace_root)
 
-      String.contains?(workspace, ["\n", "\r", <<0>>]) ->
-        {:error, {:invalid_workspace_cwd, :invalid_container_workspace, container_name, workspace}}
-
-      true ->
-        {:ok, workspace}
-    end
-  end
-
-  defp validate_workspace_cwd(workspace, worker_host, _container),
-    do: validate_workspace_cwd(workspace, worker_host)
-
-  defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
+  defp validate_workspace_cwd(workspace, nil, workspace_root) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
+    expanded_root = Path.expand(workspace_root || Config.settings!().workspace.root)
     expanded_root_prefix = expanded_root <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
@@ -194,7 +180,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp validate_workspace_cwd(workspace, worker_host)
+  defp validate_workspace_cwd(workspace, worker_host, _workspace_root)
        when is_binary(workspace) and is_binary(worker_host) do
     cond do
       String.trim(workspace) == "" ->
@@ -207,37 +193,6 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:ok, workspace}
     end
   end
-
-  defp start_port(workspace, _worker_host, %{container_name: container_name, engine: engine})
-       when is_binary(workspace) do
-    case System.find_executable(engine) do
-      nil ->
-        {:error, {:container_engine_not_found, engine}}
-
-      executable ->
-        command = "cd #{shell_escape(workspace)} && exec #{Config.settings!().codex.command}"
-
-        args =
-          ["exec", "--interactive", container_name, "bash", "-lc", command]
-          |> Enum.map(&String.to_charlist/1)
-
-        port =
-          Port.open(
-            {:spawn_executable, String.to_charlist(executable)},
-            [
-              :binary,
-              :exit_status,
-              :stderr_to_stdout,
-              args: args,
-              line: @port_line_bytes
-            ]
-          )
-
-        {:ok, port}
-    end
-  end
-
-  defp start_port(workspace, worker_host, _container), do: start_port(workspace, worker_host)
 
   defp start_port(workspace, nil) do
     executable = System.find_executable("bash")
@@ -315,12 +270,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp session_policies(workspace, _worker_host, %{container_name: _container_name}) do
-    Config.codex_runtime_settings(workspace, remote: true)
-  end
-
-  defp session_policies(workspace, worker_host, _container), do: session_policies(workspace, worker_host)
-
   defp session_policies(workspace, nil) do
     Config.codex_runtime_settings(workspace)
   end
@@ -329,14 +278,19 @@ defmodule SymphonyElixir.Codex.AppServer do
     Config.codex_runtime_settings(workspace, remote: true)
   end
 
-  defp do_start_session(port, workspace, session_policies) do
+  defp do_start_session(port, workspace, session_policies, dynamic_tool_context) do
     case send_initialize(port) do
-      :ok -> start_thread(port, workspace, session_policies)
+      :ok -> start_thread(port, workspace, session_policies, dynamic_tool_context)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp start_thread(port, workspace, %{approval_policy: approval_policy, thread_sandbox: thread_sandbox}) do
+  defp start_thread(
+         port,
+         workspace,
+         %{approval_policy: approval_policy, thread_sandbox: thread_sandbox},
+         dynamic_tool_context
+       ) do
     send_message(port, %{
       "method" => "thread/start",
       "id" => @thread_start_id,
@@ -344,7 +298,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         "approvalPolicy" => approval_policy,
         "sandbox" => thread_sandbox,
         "cwd" => workspace,
-        "dynamicTools" => DynamicTool.tool_specs()
+        "dynamicTools" => DynamicTool.tool_specs(sandbox_context: dynamic_tool_context[:sandbox])
       }
     })
 

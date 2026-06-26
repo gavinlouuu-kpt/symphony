@@ -97,12 +97,35 @@ defmodule SymphonyElixir.TestSupport do
           tracker_api_token: "token",
           tracker_project_slug: "project",
           tracker_assignee: nil,
+          tracker_required_labels: [],
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
+          worker_provider: "ssh",
           worker_ssh_hosts: [],
+          worker_ssh_options: [],
           worker_max_concurrent_agents_per_host: nil,
+          cua_driver: "docker",
+          cua_executable: "docker",
+          cua_host: "127.0.0.1",
+          cua_image: "symphony-cua-worker:latest",
+          cua_name_prefix: "symphony",
+          cua_ssh_user: "cua",
+          cua_ssh_authorized_key_path: nil,
+          cua_codex_auth_path: nil,
+          cua_codex_config_path: nil,
+          cua_delete_on_terminal: false,
+          cua_wait_for_ssh: true,
+          cua_launch_timeout_ms: 120_000,
+          cua_port_span: 1_000,
+          cua_ssh_port_start: 22_000,
+          cua_vnc_port_start: 15_900,
+          cua_novnc_port_start: 16_900,
+          cua_api_port_start: 18_000,
+          cua_env: %{},
+          cua_volumes: [],
+          cua_docker_args: [],
           max_concurrent_agents: 10,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
@@ -151,12 +174,35 @@ defmodule SymphonyElixir.TestSupport do
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
+    tracker_required_labels = Keyword.get(config, :tracker_required_labels)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
+    worker_provider = Keyword.get(config, :worker_provider)
     worker_ssh_hosts = Keyword.get(config, :worker_ssh_hosts)
+    worker_ssh_options = Keyword.get(config, :worker_ssh_options)
     worker_max_concurrent_agents_per_host = Keyword.get(config, :worker_max_concurrent_agents_per_host)
+    cua_driver = Keyword.get(config, :cua_driver)
+    cua_executable = Keyword.get(config, :cua_executable)
+    cua_host = Keyword.get(config, :cua_host)
+    cua_image = Keyword.get(config, :cua_image)
+    cua_name_prefix = Keyword.get(config, :cua_name_prefix)
+    cua_ssh_user = Keyword.get(config, :cua_ssh_user)
+    cua_ssh_authorized_key_path = Keyword.get(config, :cua_ssh_authorized_key_path)
+    cua_codex_auth_path = Keyword.get(config, :cua_codex_auth_path)
+    cua_codex_config_path = Keyword.get(config, :cua_codex_config_path)
+    cua_delete_on_terminal = Keyword.get(config, :cua_delete_on_terminal)
+    cua_wait_for_ssh = Keyword.get(config, :cua_wait_for_ssh)
+    cua_launch_timeout_ms = Keyword.get(config, :cua_launch_timeout_ms)
+    cua_port_span = Keyword.get(config, :cua_port_span)
+    cua_ssh_port_start = Keyword.get(config, :cua_ssh_port_start)
+    cua_vnc_port_start = Keyword.get(config, :cua_vnc_port_start)
+    cua_novnc_port_start = Keyword.get(config, :cua_novnc_port_start)
+    cua_api_port_start = Keyword.get(config, :cua_api_port_start)
+    cua_env = Keyword.get(config, :cua_env)
+    cua_volumes = Keyword.get(config, :cua_volumes)
+    cua_docker_args = Keyword.get(config, :cua_docker_args)
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
@@ -211,13 +257,36 @@ defmodule SymphonyElixir.TestSupport do
         "  api_key: #{yaml_value(tracker_api_token)}",
         "  project_slug: #{yaml_value(tracker_project_slug)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
+        "  required_labels: #{yaml_value(tracker_required_labels)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
         "polling:",
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",
         "  root: #{yaml_value(workspace_root)}",
-        worker_yaml(worker_ssh_hosts, worker_max_concurrent_agents_per_host),
+        worker_yaml(worker_provider, worker_ssh_hosts, worker_ssh_options, worker_max_concurrent_agents_per_host),
+        cua_yaml(
+          cua_driver,
+          cua_executable,
+          cua_host,
+          cua_image,
+          cua_name_prefix,
+          cua_ssh_user,
+          cua_ssh_authorized_key_path,
+          cua_codex_auth_path,
+          cua_codex_config_path,
+          cua_delete_on_terminal,
+          cua_wait_for_ssh,
+          cua_launch_timeout_ms,
+          cua_port_span,
+          cua_ssh_port_start,
+          cua_vnc_port_start,
+          cua_novnc_port_start,
+          cua_api_port_start,
+          cua_env,
+          cua_volumes,
+          cua_docker_args
+        ),
         "agent:",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
@@ -295,18 +364,94 @@ defmodule SymphonyElixir.TestSupport do
     end
   end
 
-  defp worker_yaml(ssh_hosts, max_concurrent_agents_per_host)
-       when ssh_hosts in [nil, []] and is_nil(max_concurrent_agents_per_host),
+  defp worker_yaml(provider, ssh_hosts, ssh_options, max_concurrent_agents_per_host)
+       when provider in [nil, "ssh"] and ssh_hosts in [nil, []] and ssh_options in [nil, []] and
+              is_nil(max_concurrent_agents_per_host),
        do: nil
 
-  defp worker_yaml(ssh_hosts, max_concurrent_agents_per_host) do
+  defp worker_yaml(provider, ssh_hosts, ssh_options, max_concurrent_agents_per_host) do
     [
       "worker:",
+      provider && "  provider: #{yaml_value(provider)}",
       ssh_hosts not in [nil, []] && "  ssh_hosts: #{yaml_value(ssh_hosts)}",
+      ssh_options not in [nil, []] && "  ssh_options: #{yaml_value(ssh_options)}",
       !is_nil(max_concurrent_agents_per_host) &&
         "  max_concurrent_agents_per_host: #{yaml_value(max_concurrent_agents_per_host)}"
     ]
     |> Enum.reject(&(&1 in [nil, false]))
+    |> Enum.join("\n")
+  end
+
+  defp cua_yaml(
+         "docker",
+         "docker",
+         "127.0.0.1",
+         "symphony-cua-worker:latest",
+         "symphony",
+         "cua",
+         nil,
+         nil,
+         nil,
+         false,
+         true,
+         120_000,
+         1_000,
+         22_000,
+         15_900,
+         16_900,
+         18_000,
+         env,
+         volumes,
+         docker_args
+       )
+       when env in [nil, %{}] and volumes in [nil, []] and docker_args in [nil, []],
+       do: nil
+
+  defp cua_yaml(
+         driver,
+         executable,
+         host,
+         image,
+         name_prefix,
+         ssh_user,
+         ssh_authorized_key_path,
+         codex_auth_path,
+         codex_config_path,
+         delete_on_terminal,
+         wait_for_ssh,
+         launch_timeout_ms,
+         port_span,
+         ssh_port_start,
+         vnc_port_start,
+         novnc_port_start,
+         api_port_start,
+         env,
+         volumes,
+         docker_args
+       ) do
+    [
+      "cua:",
+      "  driver: #{yaml_value(driver)}",
+      "  executable: #{yaml_value(executable)}",
+      "  host: #{yaml_value(host)}",
+      "  image: #{yaml_value(image)}",
+      "  name_prefix: #{yaml_value(name_prefix)}",
+      "  ssh_user: #{yaml_value(ssh_user)}",
+      "  ssh_authorized_key_path: #{yaml_value(ssh_authorized_key_path)}",
+      "  codex_auth_path: #{yaml_value(codex_auth_path)}",
+      "  codex_config_path: #{yaml_value(codex_config_path)}",
+      "  delete_on_terminal: #{yaml_value(delete_on_terminal)}",
+      "  wait_for_ssh: #{yaml_value(wait_for_ssh)}",
+      "  launch_timeout_ms: #{yaml_value(launch_timeout_ms)}",
+      "  port_span: #{yaml_value(port_span)}",
+      "  ssh_port_start: #{yaml_value(ssh_port_start)}",
+      "  vnc_port_start: #{yaml_value(vnc_port_start)}",
+      "  novnc_port_start: #{yaml_value(novnc_port_start)}",
+      "  api_port_start: #{yaml_value(api_port_start)}",
+      "  env: #{yaml_value(env || %{})}",
+      "  volumes: #{yaml_value(volumes || [])}",
+      "  docker_args: #{yaml_value(docker_args || [])}"
+    ]
     |> Enum.join("\n")
   end
 
