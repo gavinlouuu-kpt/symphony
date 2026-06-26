@@ -468,6 +468,10 @@ defmodule SymphonyElixir.Orchestrator do
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
 
+      inactive_review_allowed?(state, issue.id) ->
+        Logger.info("Retained reviewer remains active for non-active issue state: #{issue_context(issue)} state=#{issue.state}")
+        refresh_running_issue_state(state, issue)
+
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
@@ -476,6 +480,15 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp inactive_review_allowed?(%State{} = state, issue_id) when is_binary(issue_id) do
+    case Map.get(state.running, issue_id) do
+      %{phase: :reviewer, allow_inactive_review: true} -> true
+      _ -> false
+    end
+  end
+
+  defp inactive_review_allowed?(_state, _issue_id), do: false
 
   defp reconcile_blocked_issue_states([], state, _active_states, _terminal_states), do: state
 
@@ -1129,7 +1142,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, phase, review_note) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, phase, review_note, allow_inactive_review \\ false) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -1138,11 +1151,11 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, phase, review_note)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, phase, review_note, allow_inactive_review)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, phase, review_note) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, phase, review_note, allow_inactive_review) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host, phase: phase, review_note: review_note)
          end) do
@@ -1160,6 +1173,7 @@ defmodule SymphonyElixir.Orchestrator do
             worker_host: worker_host,
             phase: phase,
             review_note: review_note,
+            allow_inactive_review: allow_inactive_review == true,
             workspace_path: nil,
             sandbox: nil,
             session_id: nil,
@@ -1358,7 +1372,7 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, release_issue_claim(state, issue_id)}
 
       dispatch_slots_available?(issue, state) and worker_slots_available?(state, metadata[:worker_host]) ->
-        {:noreply, do_dispatch_issue(state, issue, attempt, metadata[:worker_host], :reviewer, metadata[:review_note])}
+        {:noreply, do_dispatch_issue(state, issue, attempt, metadata[:worker_host], :reviewer, metadata[:review_note], true)}
 
       true ->
         Logger.debug("No available slots for retained reviewer #{issue_context(issue)}; retrying again")

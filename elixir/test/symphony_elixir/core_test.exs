@@ -469,6 +469,46 @@ defmodule SymphonyElixir.CoreTest do
     assert updated_entry.issue.state == "In Progress"
   end
 
+  test "reconcile keeps retained reviewer running in non-terminal inactive state" do
+    issue_id = "issue-retained-reviewer-running"
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: self(),
+          ref: nil,
+          identifier: "KIN-94",
+          phase: :reviewer,
+          allow_inactive_review: true,
+          issue: %Issue{
+            id: issue_id,
+            identifier: "KIN-94",
+            state: "Triage"
+          },
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "KIN-94",
+      state: "Triage",
+      title: "Retained reviewer",
+      description: "Reviewer should keep running outside active states",
+      labels: ["symphony:human-review"]
+    }
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+    assert Map.has_key?(updated_state.running, issue_id)
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    assert updated_state.running[issue_id].issue.state == "Triage"
+  end
+
   test "reconcile stops running issue when it is reassigned away from this worker" do
     issue_id = "issue-reassigned"
 
