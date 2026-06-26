@@ -711,6 +711,50 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute render(view) =~ "javascript:alert"
   end
 
+  test "review console answers retained sandbox questions with dashboard context" do
+    payload = %{
+      running: [],
+      retrying: [],
+      blocked: [],
+      sandboxes: [
+        %{
+          issue_identifier: "KIN-94",
+          issue_status: "retained",
+          workspace_path: "/home/cua/workspaces/KIN-94",
+          sandbox: %{novnc_url: "http://100.81.210.49:17678/"},
+          evidence: [
+            %{kind: "video", filename: "KIN-94-visible-smoke.mp4"},
+            %{kind: "log", filename: "KIN-94-visible-exec.log"}
+          ]
+        }
+      ]
+    }
+
+    assert {"reviewer", reviewer_body} =
+             SymphonyElixirWeb.DashboardLive.console_response_for_test(
+               payload,
+               "KIN-94",
+               "reviewer",
+               "what test has been done?"
+             )
+
+    assert reviewer_body =~ "retained for inspection"
+    assert reviewer_body =~ "video: KIN-94-visible-smoke.mp4"
+    assert reviewer_body =~ "log: KIN-94-visible-exec.log"
+    assert reviewer_body =~ "I cannot start or talk to a live reviewer"
+
+    assert {"orchestrator", orchestrator_body} =
+             SymphonyElixirWeb.DashboardLive.console_response_for_test(
+               payload,
+               "KIN-94",
+               "orchestrator",
+               "status"
+             )
+
+    assert orchestrator_body =~ "Workspace: /home/cua/workspaces/KIN-94"
+    assert orchestrator_body =~ "noVNC: http://100.81.210.49:17678/"
+  end
+
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),

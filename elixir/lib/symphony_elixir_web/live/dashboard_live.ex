@@ -56,19 +56,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
       true ->
         :ok = append_console_message(issue_identifier, target, "human", body)
-
-        response =
-          case Orchestrator.review_console_message(orchestrator(), %{
-                 issue_identifier: issue_identifier,
-                 target: target,
-                 body: body
-               }) do
-            {:ok, %{role: role, body: response_body}} ->
-              {role, response_body}
-
-            {:error, :unavailable} ->
-              {"orchestrator", "The orchestrator is unavailable."}
-          end
+        response = console_response(payload, issue_identifier, target, body)
 
         {role, response_body} = response
         :ok = append_console_message(issue_identifier, target, role, response_body)
@@ -567,6 +555,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
 
+  @doc false
+  def console_response_for_test(payload, issue_identifier, target, body) do
+    console_response(payload, issue_identifier, target, body)
+  end
+
   defp dashboard_title(%{project: project}) when is_map(project) do
     case project_name(project) do
       "unknown project" -> "Operations Dashboard"
@@ -643,6 +636,119 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp normalize_console_target("reviewer"), do: "reviewer"
   defp normalize_console_target(_target), do: "orchestrator"
+
+  defp console_response(payload, issue_identifier, target, body) do
+    case console_dashboard_context(payload, issue_identifier) do
+      {:retained, sandbox_entry} ->
+        retained_console_response(sandbox_entry, target)
+
+      _context ->
+        orchestrator_console_response(issue_identifier, target, body)
+    end
+  end
+
+  defp orchestrator_console_response(issue_identifier, target, body) do
+    case Orchestrator.review_console_message(orchestrator(), %{
+           issue_identifier: issue_identifier,
+           target: target,
+           body: body
+         }) do
+      {:ok, %{role: role, body: response_body}} ->
+        {role, response_body}
+
+      {:error, :unavailable} ->
+        {"orchestrator", "The orchestrator is unavailable."}
+    end
+  end
+
+  defp console_dashboard_context(%{running: running, retrying: retrying, blocked: blocked, sandboxes: sandboxes}, issue_identifier) do
+    cond do
+      Enum.any?(running, &(&1.issue_identifier == issue_identifier)) ->
+        :active
+
+      Enum.any?(retrying, &(&1.issue_identifier == issue_identifier)) ->
+        :active
+
+      Enum.any?(blocked, &(&1.issue_identifier == issue_identifier)) ->
+        :active
+
+      retained = Enum.find(sandboxes, &(&1.issue_identifier == issue_identifier and &1.issue_status == "retained")) ->
+        {:retained, retained}
+
+      true ->
+        :missing
+    end
+  end
+
+  defp console_dashboard_context(_payload, _issue_identifier), do: :missing
+
+  defp retained_console_response(sandbox_entry, "reviewer") do
+    issue_identifier = Map.get(sandbox_entry, :issue_identifier, "issue")
+
+    {
+      "reviewer",
+      [
+        "#{issue_identifier} is retained for inspection, but it is not in a running/retrying/blocked orchestration state, so I cannot start or talk to a live reviewer for it from here.",
+        retained_evidence_sentence(sandbox_entry),
+        "For review evidence, I can only see the retained dashboard artifacts and sandbox links. I do not have persistent reviewer memory beyond this runtime console, and I have not read the Linear workpad in this retained-only state.",
+        "To run a fresh reviewer, move the Linear issue back to an active state such as Rework, then send the reviewer note again."
+      ]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n\n")
+    }
+  end
+
+  defp retained_console_response(sandbox_entry, _target) do
+    issue_identifier = Map.get(sandbox_entry, :issue_identifier, "issue")
+    workspace = Map.get(sandbox_entry, :workspace_path) || "n/a"
+    sandbox = Map.get(sandbox_entry, :sandbox) || %{}
+    novnc = sandbox_value(sandbox, :novnc_url) || "n/a"
+
+    {
+      "orchestrator",
+      [
+        "#{issue_identifier} is retained, not actively running. The sandbox is still available for human inspection.",
+        "Workspace: #{workspace}",
+        "noVNC: #{novnc}",
+        retained_evidence_sentence(sandbox_entry),
+        "Console messages are runtime-only memory and clear on service restart."
+      ]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n\n")
+    }
+  end
+
+  defp retained_evidence_sentence(sandbox_entry) do
+    evidence = Map.get(sandbox_entry, :evidence, [])
+
+    case evidence do
+      [] ->
+        "No dashboard evidence artifacts are linked for this retained sandbox."
+
+      artifacts ->
+        labels =
+          artifacts
+          |> Enum.map(&evidence_console_label/1)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.join(", ")
+
+        "Dashboard evidence artifacts currently linked: #{labels}."
+    end
+  end
+
+  defp evidence_console_label(artifact) when is_map(artifact) do
+    filename = Map.get(artifact, :filename) || Map.get(artifact, "filename")
+    kind = Map.get(artifact, :kind) || Map.get(artifact, "kind")
+
+    cond do
+      is_binary(filename) and is_binary(kind) -> "#{kind}: #{filename}"
+      is_binary(filename) -> filename
+      is_binary(kind) -> kind
+      true -> ""
+    end
+  end
+
+  defp evidence_console_label(_artifact), do: ""
 
   defp append_console_message(issue_identifier, target, role, body) do
     case ReviewConsole.append(%{
