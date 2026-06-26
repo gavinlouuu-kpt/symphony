@@ -932,6 +932,12 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "review console answers retained sandbox questions with dashboard context" do
+    orchestrator_name = Module.concat(__MODULE__, :RetainedConsoleOrchestrator)
+
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: %{}, console: %{role: "reviewer", body: "Queued retained reviewer from dashboard"}})
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
     payload = %{
       running: [],
       retrying: [],
@@ -939,7 +945,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       sandboxes: [
         %{
           issue_identifier: "KIN-94",
-          issue_status: "retained",
+          issue_status: "human_review",
           workspace_path: "/home/cua/workspaces/KIN-94",
           sandbox: %{novnc_url: "http://100.81.210.49:17678/"},
           evidence: [
@@ -958,10 +964,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "what test has been done?"
              )
 
-    assert reviewer_body =~ "retained for inspection"
-    assert reviewer_body =~ "video: KIN-94-visible-smoke.mp4"
-    assert reviewer_body =~ "log: KIN-94-visible-exec.log"
-    assert reviewer_body =~ "I cannot start or talk to a live reviewer"
+    assert reviewer_body =~ "Queued retained reviewer from dashboard"
 
     assert {"orchestrator", orchestrator_body} =
              SymphonyElixirWeb.DashboardLive.console_response_for_test(

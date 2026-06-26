@@ -250,9 +250,24 @@ defmodule SymphonyElixir.Orchestrator do
   defp block_agent_reported_handoff(state, issue_id, running_entry, session_id) do
     error = blocked_handoff_error(running_entry)
 
-    Logger.warning("Agent task reported blocked handoff for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}")
+    Logger.warning("Agent task reported blocked handoff for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}; queuing reviewer phase")
 
-    block_issue_from_entry(state, issue_id, running_entry, error)
+    maybe_mark_issue_for_human_review(issue_id)
+
+    state
+    |> complete_issue(issue_id)
+    |> schedule_issue_retry(issue_id, 1, %{
+      identifier: running_entry.identifier,
+      issue_url: Map.get(Map.get(running_entry, :issue, %{}), :url),
+      delay_type: :review,
+      phase: :reviewer,
+      labels: human_review_labels(issue_labels(Map.get(running_entry, :issue))),
+      review_note: blocked_handoff_review_note(running_entry, error),
+      error: error,
+      worker_host: Map.get(running_entry, :worker_host),
+      workspace_path: Map.get(running_entry, :workspace_path),
+      sandbox: Map.get(running_entry, :sandbox)
+    })
   end
 
   defp retry_agent_down(state, issue_id, running_entry, session_id, reason) do
@@ -775,6 +790,40 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp blocked_handoff_excerpt(_text), do: nil
 
+  defp blocked_handoff_review_note(running_entry, error) do
+    previous_note = normalize_optional_review_note(Map.get(running_entry, :review_note))
+
+    [
+      """
+      The builder appeared to enter a runaway or invalid blocked-handoff loop and exited without proving the task.
+
+      Orchestrator finding: #{error}
+
+      Reviewer focus:
+      - Inspect the retained CUA sandbox, noVNC evidence, logs, workpad, and repository state before trusting any builder conclusion.
+      - Check whether the task is blocked by GPU availability. Run appropriate host/container checks such as `nvidia-smi`, CUDA visibility, Docker GPU runtime/device exposure, and whether the KIN container can see the GPU.
+      - If GPU is available on the host but missing from the KIN sandbox, make it available to the retained CUA container when safe to do so, then rerun the focused validation.
+      - If GPU is not available or changing the container would be unsafe/destructive, document the blocker clearly and move the issue to Rework.
+      """,
+      previous_note
+    ]
+    |> Enum.reject(&blank_review_note?/1)
+    |> Enum.join("\n\n")
+  end
+
+  defp normalize_optional_review_note(note) when is_binary(note) do
+    case String.trim(note) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_review_note(_note), do: nil
+
+  defp blank_review_note?(nil), do: true
+  defp blank_review_note?(""), do: true
+  defp blank_review_note?(_note), do: false
+
   defp issue_labels(%Issue{labels: labels}) when is_list(labels), do: labels
   defp issue_labels(_issue), do: []
 
@@ -1199,6 +1248,7 @@ defmodule SymphonyElixir.Orchestrator do
     labels = pick_retry_labels(previous_retry, metadata)
     phase = pick_retry_phase(previous_retry, metadata)
     review_note = pick_retry_review_note(previous_retry, metadata)
+    allow_inactive_review = pick_retry_allow_inactive_review(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1226,7 +1276,8 @@ defmodule SymphonyElixir.Orchestrator do
             sandbox: sandbox,
             labels: labels,
             phase: phase,
-            review_note: review_note
+            review_note: review_note,
+            allow_inactive_review: allow_inactive_review
           })
     }
   end
@@ -1243,7 +1294,8 @@ defmodule SymphonyElixir.Orchestrator do
           sandbox: Map.get(retry_entry, :sandbox),
           labels: Map.get(retry_entry, :labels, []),
           phase: Map.get(retry_entry, :phase),
-          review_note: Map.get(retry_entry, :review_note)
+          review_note: Map.get(retry_entry, :review_note),
+          allow_inactive_review: Map.get(retry_entry, :allow_inactive_review, false)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1254,23 +1306,79 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    case Tracker.fetch_candidate_issues() do
+    if metadata[:allow_inactive_review] == true and normalize_phase(metadata[:phase]) == :reviewer do
+      handle_inactive_reviewer_retry_issue(state, issue_id, attempt, metadata)
+    else
+      case Tracker.fetch_candidate_issues() do
+        {:ok, issues} ->
+          issues
+          |> find_issue_by_id(issue_id)
+          |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
+
+        {:error, reason} ->
+          Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
+
+          {:noreply,
+           schedule_issue_retry(
+             state,
+             issue_id,
+             attempt + 1,
+             Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
+           )}
+      end
+    end
+  end
+
+  defp handle_inactive_reviewer_retry_issue(%State{} = state, issue_id, attempt, metadata) do
+    case Tracker.fetch_issue_states_by_ids([issue_id]) do
       {:ok, issues} ->
         issues
         |> find_issue_by_id(issue_id)
-        |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
+        |> handle_inactive_reviewer_issue_lookup(state, issue_id, attempt, metadata)
 
       {:error, reason} ->
-        Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
+        Logger.warning("Retained reviewer poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
 
         {:noreply,
          schedule_issue_retry(
            state,
            issue_id,
            attempt + 1,
-           Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
+           Map.merge(metadata, %{error: "retained reviewer poll failed: #{inspect(reason)}"})
          )}
     end
+  end
+
+  defp handle_inactive_reviewer_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata) do
+    cond do
+      terminal_issue_state?(issue.state, terminal_state_set()) ->
+        Logger.info("Retained reviewer issue is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
+
+        cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
+        {:noreply, release_issue_claim(state, issue_id)}
+
+      dispatch_slots_available?(issue, state) and worker_slots_available?(state, metadata[:worker_host]) ->
+        {:noreply, do_dispatch_issue(state, issue, attempt, metadata[:worker_host], :reviewer, metadata[:review_note])}
+
+      true ->
+        Logger.debug("No available slots for retained reviewer #{issue_context(issue)}; retrying again")
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue_id,
+           attempt + 1,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "no available retained reviewer slots"
+           })
+         )}
+    end
+  end
+
+  defp handle_inactive_reviewer_issue_lookup(nil, state, issue_id, _attempt, _metadata) do
+    Logger.debug("Retained reviewer issue no longer visible, removing claim issue_id=#{issue_id}")
+    {:noreply, release_issue_claim(state, issue_id)}
   end
 
   defp handle_retry_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata) do
@@ -1424,6 +1532,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pick_retry_review_note(previous_retry, metadata) do
     metadata[:review_note] || Map.get(previous_retry, :review_note)
+  end
+
+  defp pick_retry_allow_inactive_review(previous_retry, metadata) do
+    metadata[:allow_inactive_review] == true or Map.get(previous_retry, :allow_inactive_review, false) == true
   end
 
   defp running_entry_phase(running_entry) when is_map(running_entry) do
@@ -1700,12 +1812,13 @@ defmodule SymphonyElixir.Orchestrator do
     target = normalize_console_target(Map.get(request, :target) || Map.get(request, "target"))
     issue_identifier = normalize_console_text(Map.get(request, :issue_identifier) || Map.get(request, "issue_identifier"))
     body = normalize_console_text(Map.get(request, :body) || Map.get(request, "body"))
+    retained_sandbox = Map.get(request, :retained_sandbox) || Map.get(request, "retained_sandbox")
 
-    {reply, state} = handle_review_console_message(target, issue_identifier, body, state)
+    {reply, state} = handle_review_console_message(target, issue_identifier, body, retained_sandbox, state)
     {:reply, {:ok, reply}, state}
   end
 
-  defp handle_review_console_message("reviewer", issue_identifier, body, %State{} = state) do
+  defp handle_review_console_message("reviewer", issue_identifier, body, retained_sandbox, %State{} = state) do
     case find_console_issue(state, issue_identifier) do
       {:running, issue_id, running_entry} ->
         phase = running_entry_phase(running_entry)
@@ -1754,15 +1867,19 @@ defmodule SymphonyElixir.Orchestrator do
          }, state}
 
       :missing ->
-        {%{
-           role: "reviewer",
-           body:
-             "I do not see #{issue_identifier} in running, retrying, or blocked orchestration state. If its sandbox is retained, the issue has likely left active states; move it to Rework or another active state to run a reviewer."
-         }, state}
+        if retained_sandbox_request?(retained_sandbox, issue_identifier) do
+          queue_retained_sandbox_reviewer(state, issue_identifier, body, retained_sandbox)
+        else
+          {%{
+             role: "reviewer",
+             body:
+               "I do not see #{issue_identifier} in running, retrying, or blocked orchestration state. If its sandbox is retained, the issue has likely left active states; move it to Rework or another active state to run a reviewer."
+           }, state}
+        end
     end
   end
 
-  defp handle_review_console_message(_target, issue_identifier, _body, %State{} = state) do
+  defp handle_review_console_message(_target, issue_identifier, _body, _retained_sandbox, %State{} = state) do
     reply =
       case find_console_issue(state, issue_identifier) do
         {:running, _issue_id, running_entry} ->
@@ -1798,6 +1915,83 @@ defmodule SymphonyElixir.Orchestrator do
 
     {reply, state}
   end
+
+  defp queue_retained_sandbox_reviewer(%State{} = state, issue_identifier, body, retained_sandbox) do
+    issue_id = sandbox_entry_value(retained_sandbox, :issue_id)
+    labels = retained_sandbox |> sandbox_entry_value(:labels) |> normalize_label_list()
+    labels = human_review_labels(labels)
+
+    maybe_mark_issue_for_human_review(issue_id)
+
+    metadata = %{
+      identifier: issue_identifier,
+      issue_url: sandbox_entry_value(retained_sandbox, :issue_url),
+      delay_type: :review,
+      phase: :reviewer,
+      labels: labels,
+      review_note: retained_sandbox_review_note(retained_sandbox, body),
+      error: "retained sandbox human review requested",
+      worker_host: sandbox_entry_value(retained_sandbox, :worker_host),
+      workspace_path: sandbox_entry_value(retained_sandbox, :workspace_path),
+      sandbox: sandbox_entry_value(retained_sandbox, :sandbox),
+      allow_inactive_review: true
+    }
+
+    state =
+      state
+      |> Map.update!(:claimed, &MapSet.put(&1, issue_id))
+      |> schedule_issue_retry(issue_id, 1, metadata)
+
+    {%{
+       role: "reviewer",
+       body:
+         "Queued a reviewer phase for #{issue_identifier} from the retained CUA sandbox. The reviewer will inspect GPU availability, sandbox device exposure, noVNC/evidence artifacts, and rerun focused validation before deciding Rework or In Review."
+     }, state}
+  end
+
+  defp retained_sandbox_request?(retained_sandbox, issue_identifier) when is_map(retained_sandbox) do
+    sandbox_issue_identifier = retained_sandbox |> sandbox_entry_value(:issue_identifier) |> normalize_console_text()
+    issue_id = sandbox_entry_value(retained_sandbox, :issue_id)
+
+    sandbox_issue_identifier == issue_identifier and is_binary(issue_id) and issue_id != ""
+  end
+
+  defp retained_sandbox_request?(_retained_sandbox, _issue_identifier), do: false
+
+  defp retained_sandbox_review_note(retained_sandbox, body) do
+    sandbox = sandbox_entry_value(retained_sandbox, :sandbox) || %{}
+
+    [
+      """
+      Human requested a reviewer pass from a retained CUA sandbox that is marked for human review.
+
+      Retained sandbox context:
+      - issue_status: #{sandbox_entry_value(retained_sandbox, :issue_status) || "n/a"}
+      - issue_state: #{sandbox_entry_value(retained_sandbox, :issue_state) || "n/a"}
+      - workspace: #{sandbox_entry_value(retained_sandbox, :workspace_path) || "n/a"}
+      - worker_host: #{sandbox_entry_value(retained_sandbox, :worker_host) || "n/a"}
+      - noVNC: #{sandbox_entry_value(sandbox, :novnc_url) || "n/a"}
+
+      Reviewer focus:
+      - Inspect the retained CUA sandbox, noVNC evidence, logs, workpad, and repository state before trusting any builder conclusion.
+      - Check whether the task is blocked by GPU availability. Run appropriate host/container checks such as `nvidia-smi`, CUDA visibility, Docker GPU runtime/device exposure, and whether the KIN container can see the GPU.
+      - If GPU is available on the host but missing from the KIN sandbox, make it available to the retained CUA container when safe to do so, then rerun the focused validation.
+      - If GPU is not available or changing the container would be unsafe/destructive, document the blocker clearly and move the issue to Rework.
+      """,
+      normalize_optional_review_note(body)
+    ]
+    |> Enum.reject(&blank_review_note?/1)
+    |> Enum.join("\n\n")
+  end
+
+  defp sandbox_entry_value(entry, key) when is_map(entry) do
+    Map.get(entry, key) || Map.get(entry, to_string(key))
+  end
+
+  defp sandbox_entry_value(_entry, _key), do: nil
+
+  defp normalize_label_list(labels) when is_list(labels), do: Enum.filter(labels, &is_binary/1)
+  defp normalize_label_list(_labels), do: []
 
   defp find_console_issue(%State{} = state, issue_identifier) do
     find_console_running_issue(state.running, issue_identifier) ||

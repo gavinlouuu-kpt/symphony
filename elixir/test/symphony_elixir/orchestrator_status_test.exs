@@ -182,9 +182,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     Process.sleep(50)
     state = :sys.get_state(pid)
 
-    refute Map.has_key?(state.retry_attempts, issue_id)
-    assert %{error: error} = state.blocked[issue_id]
+    refute Map.has_key?(state.blocked, issue_id)
+    assert %{error: error, phase: :reviewer, labels: labels, review_note: review_note} = state.retry_attempts[issue_id]
     assert error =~ "KIN-95 provisioning"
+    assert labels == ["symphony:human-review"]
+    assert review_note =~ "GPU availability"
+    assert review_note =~ "make it available to the retained CUA container"
   end
 
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do

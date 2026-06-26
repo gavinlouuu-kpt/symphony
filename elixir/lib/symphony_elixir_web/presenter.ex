@@ -394,17 +394,20 @@ defmodule SymphonyElixirWeb.Presenter do
         nil
 
       sandbox ->
+        labels = Map.get(entry, :labels, [])
+        human_review_required = Map.get(entry, :human_review_required, false)
+
         %{
           issue_id: Map.get(entry, :issue_id),
           issue_identifier: Map.get(entry, :identifier),
           issue_url: Map.get(entry, :issue_url),
-          issue_status: issue_status,
+          issue_status: human_review_issue_status(issue_status, labels, human_review_required),
           worker_host: Map.get(entry, :worker_host),
           workspace_path: Map.get(entry, :workspace_path),
           sandbox: sandbox
         }
-        |> maybe_put_labels(Map.get(entry, :labels, []))
-        |> maybe_put_human_review(Map.get(entry, :labels, []), Map.get(entry, :human_review_required, false))
+        |> maybe_put_labels(labels)
+        |> maybe_put_human_review(labels, human_review_required)
         |> maybe_put_evidence(Map.get(entry, :identifier))
     end
   end
@@ -423,7 +426,7 @@ defmodule SymphonyElixirWeb.Presenter do
           issue_identifier: Map.get(entry, :issue_identifier),
           issue_url: issue_url(issue) || Map.get(entry, :issue_url),
           issue_state: issue_state(issue),
-          issue_status: retained_issue_status(issue, entry),
+          issue_status: human_review_issue_status(retained_issue_status(issue, entry), labels),
           worker_host: Map.get(entry, :worker_host),
           workspace_path: Map.get(entry, :workspace_path),
           sandbox: sandbox
@@ -478,6 +481,14 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp retained_issue_status(%{state: state}, _entry) when is_binary(state), do: state
   defp retained_issue_status(_issue, entry), do: Map.get(entry, :issue_status) || "retained"
+
+  defp human_review_issue_status(issue_status, labels, forced \\ false) do
+    if forced or human_review_label?(labels) do
+      "human_review"
+    else
+      issue_status
+    end
+  end
 
   defp labels_payload(labels) when is_list(labels) do
     labels =

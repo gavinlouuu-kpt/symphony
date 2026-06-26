@@ -653,11 +653,29 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp console_response(payload, issue_identifier, target, body) do
     case console_dashboard_context(payload, issue_identifier) do
+      {:retained, sandbox_entry} when target == "reviewer" ->
+        retained_reviewer_console_response(sandbox_entry, body)
+
       {:retained, sandbox_entry} ->
         retained_console_response(sandbox_entry, target)
 
       _context ->
         orchestrator_console_response(issue_identifier, target, body)
+    end
+  end
+
+  defp retained_reviewer_console_response(sandbox_entry, body) do
+    case Orchestrator.review_console_message(orchestrator(), %{
+           issue_identifier: Map.get(sandbox_entry, :issue_identifier),
+           target: "reviewer",
+           body: body,
+           retained_sandbox: sandbox_entry
+         }) do
+      {:ok, %{role: role, body: response_body}} ->
+        {role, response_body}
+
+      {:error, :unavailable} ->
+        retained_console_response(sandbox_entry, "reviewer")
     end
   end
 
@@ -686,7 +704,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       Enum.any?(blocked, &(&1.issue_identifier == issue_identifier)) ->
         :active
 
-      retained = Enum.find(sandboxes, &(&1.issue_identifier == issue_identifier and &1.issue_status == "retained")) ->
+      retained = Enum.find(sandboxes, &retained_sandbox_context?(&1, issue_identifier)) ->
         {:retained, retained}
 
       true ->
@@ -695,6 +713,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp console_dashboard_context(_payload, _issue_identifier), do: :missing
+
+  defp retained_sandbox_context?(sandbox_entry, issue_identifier) do
+    sandbox_entry.issue_identifier == issue_identifier and
+      sandbox_entry.issue_status in ["retained", "human_review"]
+  end
 
   defp retained_console_response(sandbox_entry, "reviewer") do
     issue_identifier = Map.get(sandbox_entry, :issue_identifier, "issue")
@@ -964,7 +987,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     cond do
       String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
-      String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
+      String.contains?(normalized, ["blocked", "error", "failed", "human_review"]) -> "#{base} state-badge-danger"
       String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
       true -> base
     end

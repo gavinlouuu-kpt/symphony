@@ -681,7 +681,7 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_after_in_range(due_at_ms, scheduled_after_ms, 500, 1_100)
   end
 
-  test "normal builder exit with blocked handoff text is retained as blocked instead of reviewer retry" do
+  test "normal builder exit with blocked handoff text queues human-review reviewer phase" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
       tracker_human_review_label: "Human Review"
@@ -728,20 +728,24 @@ defmodule SymphonyElixir.CoreTest do
     state = :sys.get_state(pid)
 
     refute Map.has_key?(state.running, issue_id)
-    refute Map.has_key?(state.retry_attempts, issue_id)
-    refute MapSet.member?(state.completed, issue_id)
+    refute Map.has_key?(state.blocked, issue_id)
+    assert Map.has_key?(state.retry_attempts, issue_id)
+    assert MapSet.member?(state.completed, issue_id)
     assert MapSet.member?(state.claimed, issue_id)
 
     assert %{
              identifier: "MT-BLOCKED",
              error: error,
-             phase: :builder,
+             phase: :reviewer,
              labels: ["human review"],
-             human_review_required: true
-           } = state.blocked[issue_id]
+             review_note: review_note
+           } = state.retry_attempts[issue_id]
 
     assert error =~ "agent reported blocked handoff"
     assert error =~ "KIN-95 provisioning"
+    assert review_note =~ "runaway or invalid blocked-handoff loop"
+    assert review_note =~ "GPU availability"
+    assert review_note =~ "make it available to the retained CUA container"
     assert_receive {:memory_tracker_label_add, ^issue_id, "human review"}
   end
 
@@ -863,6 +867,61 @@ defmodule SymphonyElixir.CoreTest do
     assert retry.phase == :reviewer
     assert retry.review_note == "Review the regression evidence."
     assert retry.attempt == 1
+  end
+
+  test "review console queues reviewer phase from retained human-review sandbox" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_human_review_label: "symphony:human-review"
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue_id = "issue-retained-review"
+    orchestrator_name = Module.concat(__MODULE__, :ConsoleRetainedReviewerOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    assert {:ok, %{role: "reviewer", body: body}} =
+             Orchestrator.review_console_message(orchestrator_name, %{
+               issue_identifier: "KIN-94",
+               target: "reviewer",
+               body: "Check why SAM2 validation is not using GPU.",
+               retained_sandbox: %{
+                 issue_id: issue_id,
+                 issue_identifier: "KIN-94",
+                 issue_status: "human_review",
+                 issue_state: "Triage",
+                 issue_url: "https://example.org/issues/KIN-94",
+                 labels: ["symphony:human-review"],
+                 worker_host: "cua@100.81.210.49:22778",
+                 workspace_path: "/home/cua/workspaces/KIN-94",
+                 sandbox: %{
+                   provider: "cua",
+                   name: "symphony-biowork-monorepo-kin-94",
+                   novnc_url: "http://100.81.210.49:17678/"
+                 }
+               }
+             })
+
+    assert body =~ "Queued a reviewer phase"
+
+    retry = :sys.get_state(pid).retry_attempts[issue_id]
+    assert retry.phase == :reviewer
+    assert retry.allow_inactive_review == true
+    assert retry.labels == ["symphony:human-review"]
+    assert retry.worker_host == "cua@100.81.210.49:22778"
+    assert retry.workspace_path == "/home/cua/workspaces/KIN-94"
+    assert retry.review_note =~ "GPU availability"
+    assert retry.review_note =~ "noVNC: http://100.81.210.49:17678/"
+    assert retry.review_note =~ "Check why SAM2 validation is not using GPU."
+
+    assert_receive {:memory_tracker_label_add, ^issue_id, "symphony:human-review"}
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
