@@ -423,6 +423,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec dispatch_phase_for_test(Issue.t()) :: :builder | :reviewer
+  def dispatch_phase_for_test(%Issue{} = issue), do: dispatch_phase(issue)
+
+  @doc false
+  @spec retry_dispatch_phase_for_test(Issue.t(), map()) :: :builder | :reviewer
+  def retry_dispatch_phase_for_test(%Issue{} = issue, metadata) when is_map(metadata) do
+    {phase, _review_note} = retry_dispatch_plan(issue, metadata)
+    phase
+  end
+
+  @doc false
   @spec revalidate_issue_for_dispatch_for_test(Issue.t(), ([String.t()] -> term())) ::
           {:ok, Issue.t()} | {:skip, Issue.t() | :missing} | {:error, term()}
   def revalidate_issue_for_dispatch_for_test(%Issue{} = issue, issue_fetcher)
@@ -990,7 +1001,7 @@ defmodule SymphonyElixir.Orchestrator do
     |> sort_issues_for_dispatch()
     |> Enum.reduce(state, fn issue, state_acc ->
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
-        dispatch_issue(state_acc, issue)
+        dispatch_candidate_issue(state_acc, issue)
       else
         state_acc
       end
@@ -1025,7 +1036,6 @@ defmodule SymphonyElixir.Orchestrator do
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
-      !human_review_issue?(issue) and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       !Map.has_key?(blocked, issue.id) and
@@ -1035,6 +1045,32 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
+
+  defp dispatch_candidate_issue(%State{} = state, %Issue{} = issue) do
+    case dispatch_phase(issue) do
+      :reviewer ->
+        dispatch_issue(state, issue, nil, nil, :reviewer, human_review_facilitation_note(issue))
+
+      :builder ->
+        dispatch_issue(state, issue)
+    end
+  end
+
+  defp dispatch_phase(%Issue{} = issue) do
+    if human_review_issue?(issue), do: :reviewer, else: :builder
+  end
+
+  defp human_review_facilitation_note(%Issue{} = issue) do
+    """
+    Orchestrator routed this issue to reviewer/facilitator because it is marked for human review.
+
+    Do not wait for a human by default. Inspect the retained CUA sandbox, blocker artifacts under `.symphony/validation`, noVNC evidence, Linear dependencies, and current repo state. Facilitate blockers that are safe for the orchestrator/reviewer to resolve, then rerun focused validation.
+
+    For KIN-94-like SAM2 blockers specifically, verify GPU/CUDA visibility with `nvidia-smi`, check Python/runtime imports, search for required SAM2 checkpoint/config assets, inspect blocking Linear issues such as KIN-95, and decide one outcome: move to In Review if validation passes, keep/move to Rework with concrete blocker evidence if assets or approvals are still missing, or remove the human-review label only after the blocker is actually cleared.
+
+    Issue state when routed: #{issue.state || "unknown"}
+    """
+  end
 
   defp state_slots_available?(%Issue{state: issue_state}, running) when is_map(running) do
     limit = Config.max_concurrent_agents_for_state(issue_state)
@@ -1482,7 +1518,8 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata[:phase], metadata[:review_note])}
+      {phase, review_note} = retry_dispatch_plan(issue, metadata)
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], phase, review_note)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -1498,6 +1535,20 @@ defmodule SymphonyElixir.Orchestrator do
        )}
     end
   end
+
+  defp retry_dispatch_plan(%Issue{} = issue, metadata) do
+    requested_phase = normalize_phase(metadata[:phase])
+
+    if human_review_issue?(issue) and requested_phase == :builder do
+      {:reviewer, combine_review_notes(human_review_facilitation_note(issue), metadata[:review_note])}
+    else
+      {requested_phase, metadata[:review_note]}
+    end
+  end
+
+  defp combine_review_notes(note, nil), do: note
+  defp combine_review_notes(note, ""), do: note
+  defp combine_review_notes(note, previous_note), do: note <> "\n\n" <> previous_note
 
   defp release_issue_claim(%State{} = state, issue_id) do
     %{

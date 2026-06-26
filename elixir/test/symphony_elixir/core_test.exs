@@ -509,7 +509,9 @@ defmodule SymphonyElixir.CoreTest do
     assert updated_state.running[issue_id].issue.state == "Triage"
   end
 
-  test "human-review label prevents normal builder dispatch" do
+  test "human-review label routes active issues to reviewer instead of builder" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: ["Todo", "In Progress", "Rework"])
+
     issue = %Issue{
       id: "issue-human-review-skip",
       identifier: "KIN-94",
@@ -518,13 +520,16 @@ defmodule SymphonyElixir.CoreTest do
       labels: ["symphony:human-review"]
     }
 
-    refute Orchestrator.should_dispatch_issue_for_test(issue, %Orchestrator.State{
+    assert Orchestrator.should_dispatch_issue_for_test(issue, %Orchestrator.State{
              claimed: MapSet.new(),
              running: %{},
              blocked: %{},
              max_concurrent_agents: 1,
              codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
            })
+
+    assert Orchestrator.dispatch_phase_for_test(issue) == :reviewer
+    assert Orchestrator.retry_dispatch_phase_for_test(issue, %{phase: :builder}) == :reviewer
   end
 
   test "reconcile stops running issue when it is reassigned away from this worker" do
