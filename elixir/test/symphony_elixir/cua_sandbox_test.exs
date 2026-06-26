@@ -86,6 +86,56 @@ defmodule SymphonyElixir.CuaSandboxTest do
     assert trace =~ "local/symphony-cua-worker:test"
   end
 
+  test "ensure_for_issue can launch CUA sandboxes with GPU access" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-cua-gpu-launch-#{System.unique_integer([:positive])}")
+    trace_file = Path.join(test_root, "docker.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    install_fake_executable!(test_root, "docker", trace_file, """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+
+    case "$*" in
+      inspect*"symphony-mt-gpu"*)
+        echo "Error: No such object: symphony-mt-gpu" >&2
+        exit 1
+        ;;
+      run*)
+        printf '%s\\n' 'container-gpu'
+        exit 0
+        ;;
+      *)
+        echo "unexpected docker call: $*" >&2
+        exit 2
+        ;;
+    esac
+    """)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      worker_provider: "cua",
+      cua_gpu: "all",
+      cua_wait_for_ssh: false,
+      cua_port_span: 10,
+      cua_ssh_port_start: 31_000,
+      cua_vnc_port_start: 32_000,
+      cua_novnc_port_start: 33_000,
+      cua_api_port_start: 34_000
+    )
+
+    assert {:ok, _runtime} = Sandbox.ensure_for_issue("MT-GPU")
+
+    trace = File.read!(trace_file)
+    assert trace =~ "run -d --name symphony-mt-gpu"
+    assert trace =~ "--gpus all"
+    assert trace =~ "-e NVIDIA_VISIBLE_DEVICES=all"
+    assert trace =~ "-e NVIDIA_DRIVER_CAPABILITIES=compute,utility"
+  end
+
   test "ensure_for_issue reuses an existing CUA docker sandbox" do
     test_root = Path.join(System.tmp_dir!(), "symphony-cua-existing-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "docker.trace")

@@ -128,6 +128,9 @@ bin/build-cua-image.sh
 
 Set `SYMPHONY_CUA_IMAGE_BUILD=never` when using a prebuilt image from a registry.
 
+Set `SYMPHONY_CUA_GPU=all` on instances whose CUA sandboxes need NVIDIA GPU access. Leave it as
+`none` on hosts without NVIDIA Container Toolkit support.
+
 ## Private Repositories
 
 Codex runs on the host, but project commands run inside the CUA sandbox. The default `after_create`

@@ -124,6 +124,7 @@ defmodule SymphonyElixir.TestSupport do
           cua_vnc_port_start: 15_900,
           cua_novnc_port_start: 16_900,
           cua_api_port_start: 18_000,
+          cua_gpu: "none",
           cua_env: %{},
           cua_volumes: [],
           cua_docker_args: [],
@@ -202,6 +203,7 @@ defmodule SymphonyElixir.TestSupport do
     cua_vnc_port_start = Keyword.get(config, :cua_vnc_port_start)
     cua_novnc_port_start = Keyword.get(config, :cua_novnc_port_start)
     cua_api_port_start = Keyword.get(config, :cua_api_port_start)
+    cua_gpu = Keyword.get(config, :cua_gpu)
     cua_env = Keyword.get(config, :cua_env)
     cua_volumes = Keyword.get(config, :cua_volumes)
     cua_docker_args = Keyword.get(config, :cua_docker_args)
@@ -286,6 +288,7 @@ defmodule SymphonyElixir.TestSupport do
           cua_vnc_port_start,
           cua_novnc_port_start,
           cua_api_port_start,
+          cua_gpu,
           cua_env,
           cua_volumes,
           cua_docker_args
@@ -403,6 +406,7 @@ defmodule SymphonyElixir.TestSupport do
          15_900,
          16_900,
          18_000,
+         "none",
          env,
          volumes,
          docker_args
@@ -428,6 +432,7 @@ defmodule SymphonyElixir.TestSupport do
          vnc_port_start,
          novnc_port_start,
          api_port_start,
+         gpu,
          env,
          volumes,
          docker_args
@@ -451,6 +456,7 @@ defmodule SymphonyElixir.TestSupport do
       "  vnc_port_start: #{yaml_value(vnc_port_start)}",
       "  novnc_port_start: #{yaml_value(novnc_port_start)}",
       "  api_port_start: #{yaml_value(api_port_start)}",
+      "  gpu: #{yaml_value(gpu)}",
       "  env: #{yaml_value(env || %{})}",
       "  volumes: #{yaml_value(volumes || [])}",
       "  docker_args: #{yaml_value(docker_args || [])}"

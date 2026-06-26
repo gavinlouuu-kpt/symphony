@@ -41,6 +41,7 @@ cua:
   delete_on_terminal: @SYMPHONY_CUA_DELETE_ON_TERMINAL@
   wait_for_ssh: true
   launch_timeout_ms: @SYMPHONY_CUA_LAUNCH_TIMEOUT_MS@
+  gpu: "@SYMPHONY_CUA_GPU@"
   volumes: []
   docker_args: []
 hooks:

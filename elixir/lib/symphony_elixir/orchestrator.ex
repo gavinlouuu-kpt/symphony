@@ -1025,6 +1025,7 @@ defmodule SymphonyElixir.Orchestrator do
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+      !human_review_issue?(issue) and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       !Map.has_key?(blocked, issue.id) and
@@ -1076,6 +1077,27 @@ defmodule SymphonyElixir.Orchestrator do
   defp issue_routable?(%Issue{} = issue) do
     Issue.routable?(issue, Config.settings!().tracker.required_labels)
   end
+
+  defp human_review_issue?(%Issue{} = issue) do
+    issue
+    |> issue_labels()
+    |> human_review_label_present?()
+  end
+
+  defp human_review_issue?(_issue), do: false
+
+  defp human_review_label_present?(labels) when is_list(labels) do
+    case human_review_label() do
+      nil ->
+        false
+
+      label ->
+        normalized = normalize_label(label)
+        Enum.any?(labels, &(normalize_label(&1) == normalized))
+    end
+  end
+
+  defp human_review_label_present?(_labels), do: false
 
   defp todo_issue_blocked_by_non_terminal?(
          %Issue{state: issue_state, blocked_by: blockers},

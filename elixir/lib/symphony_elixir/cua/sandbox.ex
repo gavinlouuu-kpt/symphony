@@ -156,9 +156,23 @@ defmodule SymphonyElixir.Cua.Sandbox do
       env_args(cua.env) ++
       mounted_secret_args(cua) ++
       configured_volume_args(cua.volumes) ++
+      gpu_args(cua) ++
       (cua.docker_args || []) ++
       [cua.image]
   end
+
+  defp gpu_args(%{gpu: "all"}) do
+    [
+      "--gpus",
+      "all",
+      "-e",
+      "NVIDIA_VISIBLE_DEVICES=all",
+      "-e",
+      "NVIDIA_DRIVER_CAPABILITIES=compute,utility"
+    ]
+  end
+
+  defp gpu_args(_cua), do: []
 
   defp env_args(env) when is_map(env) do
     env

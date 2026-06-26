@@ -172,6 +172,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:vnc_port_start, :integer, default: 15_900)
       field(:novnc_port_start, :integer, default: 16_900)
       field(:api_port_start, :integer, default: 18_000)
+      field(:gpu, :string, default: "none")
       field(:env, :map, default: %{})
       field(:volumes, {:array, :string}, default: [])
       field(:docker_args, {:array, :string}, default: [])
@@ -200,6 +201,7 @@ defmodule SymphonyElixir.Config.Schema do
           :vnc_port_start,
           :novnc_port_start,
           :api_port_start,
+          :gpu,
           :env,
           :volumes,
           :docker_args
@@ -213,6 +215,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_port(:vnc_port_start)
       |> validate_port(:novnc_port_start)
       |> validate_port(:api_port_start)
+      |> validate_inclusion(:gpu, ["none", "all"])
     end
 
     defp validate_port(changeset, field) do
