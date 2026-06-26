@@ -10,7 +10,6 @@ tracker:
     - In Progress
     - Rework
     - Merging
-    - Human Review
   terminal_states:
     - Closed
     - Cancelled
@@ -93,19 +92,55 @@ Description:
 No description provided.
 {% endif %}
 
-Operating rules:
+Closed-loop operating contract:
 
-1. Work autonomously end to end inside the CUA sandbox.
-2. Keep a single Linear workpad comment current with plan, acceptance criteria, validation, and final status.
-3. Reproduce or inspect the issue before changing code when possible.
-4. Run focused validation before marking work complete.
-5. Build sanitized, production-scale local data under production-like settings when the task needs realistic product validation.
-6. Inventory every user-facing feature, role, route, button, input, modal, state, and workflow affected by the issue.
-7. Define documented acceptance criteria and a finite, risk-based edge-case list before broad validation.
-8. Test as a real user and log every bug with reproduction evidence.
-9. Review findings for shared causes and dependencies; implement coherent fixes with regression tests.
-10. Rerun the full affected inventory and stop only at a clean pass or a blocked handoff.
-11. Use `sandbox_visible_exec` and the sandbox GUI/noVNC path for UI validation when the task is visual, interactive, demo-oriented, or real-user tested. Record transcript paths from `.symphony/visible-exec/` in the workpad.
-12. Ask before production access, sensitive data access, or destructive actions.
-13. If blocked by missing project auth, repo auth, secrets, hardware, or external services, document the exact blocker in the workpad and stop.
-14. Do not copy host credentials into the sandbox unless the project workflow explicitly requires it.
+Symphony is a loop runner. Do not treat this as a one-shot prompt. Run the issue through the loop
+below until it reaches Review, Rework, Done, or a blocked handoff.
+
+1. Select and orient
+   - Read the issue, existing workpad, repository state, and current branch before changing code.
+   - If a previous sandbox/workspace exists, continue from it instead of restarting.
+   - Record the current phase in the workpad: `Discover`, `Prove`, `Patch`, `Probe`, `Present`, or `Blocked`.
+
+2. Discover
+   - Reproduce or inspect the issue before changing code when possible.
+   - Inventory affected user-facing features, roles, routes, buttons, inputs, modals, states, APIs, data paths, and workflows.
+   - Define acceptance criteria and a finite, risk-based edge-case list.
+   - Build sanitized, production-scale local data under production-like settings when realistic validation is needed.
+
+3. Prove
+   - Add a failing test, reproduction script, fixture, or documented manual reproduction when practical.
+   - Prefer project CLIs, scripts, and test commands over ad hoc reasoning. If a useful CLI is missing, add a small one when it is scoped and maintainable.
+   - Document the exact reproduction command or manual path in the workpad.
+
+4. Patch
+   - Implement the smallest coherent slice that addresses the issue and shared root causes.
+   - Keep changes scoped to the issue. Do not refactor unrelated areas except where needed to remove a demonstrated shared cause.
+   - Preserve tricky intent with concise code comments where future agents or humans would otherwise misread it.
+
+5. Probe
+   - Run focused validation after each meaningful slice.
+   - Run regression tests for affected contracts before presenting.
+   - For UI, browser, desktop, demo, or real-user workflows, use `sandbox_visible_exec`; do not rely only on headless commands.
+   - Record visible transcripts from `.symphony/visible-exec/` and copy durable demo artifacts to the instance evidence directory using filenames prefixed with the issue identifier, for example `{{ issue.identifier }}-visible-smoke.mp4`.
+   - The dashboard links files from the evidence directory back to the issue's retained sandbox row.
+
+6. Present
+   - Update the single Linear workpad with: phase, acceptance checklist, edge-case checklist, commands run, evidence links/paths, remaining risks, and next decision.
+   - Push branch/PR when repo auth allows. If push is blocked, persist commits as bundles/patches and document exact paths.
+   - Move the issue to the real review state only after acceptance criteria pass or after a clearly documented blocked handoff.
+
+7. Decide exactly one loop exit
+   - `Continue`: more implementation or validation remains; keep working in the same sandbox.
+   - `Rework`: validation or review failed; keep the sandbox and fix the root cause.
+   - `Review`: validation passed; stop the agent, keep the sandbox alive, and leave evidence visible in the dashboard.
+   - `Blocked`: external input, auth, secrets, hardware, production access, or destructive approval is required; document the blocker and stop.
+   - `Done`: only after human/project acceptance; terminal cleanup may close the sandbox.
+
+Safety rules:
+
+1. Ask before production access, sensitive data access, or destructive actions.
+2. Do not copy host credentials into the sandbox unless the project workflow explicitly requires it.
+3. Do not mark work complete because one command passed; complete means the loop has passed its acceptance and risk checks.
+4. Do not hide failed checks. Log the failure, diagnose shared causes, fix coherently, and rerun.
+5. If token, time, dependency, or environment constraints prevent a clean pass, produce a blocked handoff with exact reproduction and next action.

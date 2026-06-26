@@ -156,6 +156,38 @@ activity in noVNC, the agent should use `sandbox_visible_exec`. It opens a termi
 runs the command from the issue workspace, records a transcript under `.symphony/visible-exec/`, waits
 for completion, and leaves the terminal open for review.
 
+## Closed-Loop Workflow
+
+The project template treats Symphony as a loop runner, not a one-shot prompt runner. Each issue should
+move through this loop:
+
+```text
+Discover -> Prove -> Patch -> Probe -> Present -> Continue | Rework | Review | Blocked | Done
+```
+
+- `Discover`: inspect the issue, current workspace, affected workflows, acceptance criteria, and edge cases.
+- `Prove`: create a failing test, reproduction script, fixture, or documented manual reproduction when practical.
+- `Patch`: implement the smallest coherent slice that addresses the root cause.
+- `Probe`: run focused validation, regression checks, and `sandbox_visible_exec` for UI/demo/real-user paths.
+- `Present`: update the Linear workpad with checklist status, commands, evidence, risks, and next decision.
+
+Recommended Linear state mapping:
+
+```text
+Todo        -> eligible for dispatch
+In Progress -> active agent loop
+In Review   -> agent stopped, sandbox retained, evidence visible
+Rework      -> resume the same issue/sandbox and fix review or validation failures
+Done        -> terminal cleanup may close the sandbox
+```
+
+Keep `In Review` out of `tracker.active_states` unless you intentionally want review issues to dispatch
+again. The dashboard inventories retained CUA containers separately, so review sandboxes can remain
+visible without counting as running agents.
+
+Evidence files placed in `SYMPHONY_EVIDENCE_ROOT` with the issue prefix, for example
+`KIN-94-visible-smoke.mp4`, are linked from the issue's CUA sandbox row in the dashboard.
+
 ## Dashboard
 
 The dashboard listens on `SYMPHONY_DASHBOARD_HOST:SYMPHONY_DASHBOARD_PORT`.
