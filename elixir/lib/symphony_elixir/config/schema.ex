@@ -51,6 +51,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:project_slug, :string)
       field(:assignee, :string)
       field(:required_labels, {:array, :string}, default: [])
+      field(:human_review_label, :string, default: "symphony:human-review")
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -60,15 +61,35 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :required_labels, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :assignee,
+          :required_labels,
+          :human_review_label,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
+      |> update_change(:human_review_label, &normalize_optional_label/1)
       |> update_change(:required_labels, fn labels ->
         labels
         |> Enum.map(&(String.trim(&1) |> String.downcase()))
         |> Enum.uniq()
       end)
     end
+
+    defp normalize_optional_label(label) when is_binary(label) do
+      case String.trim(label) do
+        "" -> nil
+        trimmed -> String.downcase(trimmed)
+      end
+    end
+
+    defp normalize_optional_label(label), do: label
   end
 
   defmodule Polling do

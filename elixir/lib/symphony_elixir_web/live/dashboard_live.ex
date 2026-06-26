@@ -297,6 +297,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
+                        <.human_review_badge entry={entry} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -364,6 +365,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
+                        <.human_review_badge entry={entry} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -455,6 +457,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
+                        <.human_review_badge entry={entry} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -789,16 +792,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     ~H"""
     <%= if @href do %>
-      <a
-        class="issue-id issue-id-link"
-        href={@href}
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label={"Open #{@identifier} in the issue tracker"}
-      ><%= @identifier %></a>
+     <a
+       class="issue-id issue-id-link"
+       href={@href}
+       target="_blank"
+       rel="noopener noreferrer"
+       aria-label={"Open #{@identifier} in the issue tracker"}
+     ><%= @identifier %></a>
     <% else %>
-      <span class="issue-id"><%= @identifier %></span>
+     <span class="issue-id"><%= @identifier %></span>
     <% end %>
+    """
+  end
+
+  attr(:entry, :map, required: true)
+
+  defp human_review_badge(assigns) do
+    ~H"""
+    <span :if={Map.get(@entry, :human_review_required)} class="human-review-badge">
+      Human review
+    </span>
     """
   end
 

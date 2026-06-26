@@ -222,6 +222,7 @@ defmodule SymphonyElixir.Orchestrator do
           issue_url: running_entry.issue.url,
           delay_type: delay_type,
           phase: next_phase,
+          labels: issue_labels(Map.get(running_entry, :issue)),
           review_note: Map.get(running_entry, :review_note),
           worker_host: Map.get(running_entry, :worker_host),
           workspace_path: Map.get(running_entry, :workspace_path),
@@ -264,6 +265,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_url: running_entry.issue.url,
       error: "agent exited: #{inspect(reason)}",
       phase: running_entry_phase(running_entry),
+      labels: issue_labels(Map.get(running_entry, :issue)),
       review_note: Map.get(running_entry, :review_note),
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path),
@@ -773,6 +775,67 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp blocked_handoff_excerpt(_text), do: nil
 
+  defp issue_labels(%Issue{labels: labels}) when is_list(labels), do: labels
+  defp issue_labels(_issue), do: []
+
+  defp human_review_labels(labels) when is_list(labels) do
+    label = human_review_label()
+    normalized = normalize_label(label)
+
+    cond do
+      is_nil(label) ->
+        labels
+
+      Enum.any?(labels, &(normalize_label(&1) == normalized)) ->
+        labels
+
+      true ->
+        labels ++ [label]
+    end
+  end
+
+  defp human_review_labels(_labels), do: human_review_labels([])
+
+  defp human_review_label do
+    case Config.settings!().tracker.human_review_label do
+      label when is_binary(label) ->
+        case String.trim(label) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp maybe_mark_issue_for_human_review(issue_id) when is_binary(issue_id) do
+    case human_review_label() do
+      nil ->
+        :ok
+
+      label ->
+        case Tracker.add_issue_label(issue_id, label) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("Failed to add human-review label issue_id=#{issue_id} label=#{inspect(label)} error=#{inspect(reason)}")
+            :ok
+        end
+    end
+  end
+
+  defp maybe_mark_issue_for_human_review(_issue_id), do: :ok
+
+  defp normalize_label(label) when is_binary(label) do
+    label
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_label(_label), do: ""
+
   defp codex_event_blocker_error(:turn_input_required), do: "codex turn requires operator input"
   defp codex_event_blocker_error(:approval_required), do: "codex turn requires approval"
   defp codex_event_blocker_error(_event), do: nil
@@ -833,6 +896,8 @@ defmodule SymphonyElixir.Orchestrator do
       issue: Map.get(running_entry, :issue),
       worker_host: Map.get(running_entry, :worker_host),
       phase: running_entry_phase(running_entry),
+      labels: human_review_labels(issue_labels(Map.get(running_entry, :issue))),
+      human_review_required: true,
       review_note: Map.get(running_entry, :review_note),
       workspace_path: Map.get(running_entry, :workspace_path),
       sandbox: Map.get(running_entry, :sandbox),
@@ -843,6 +908,8 @@ defmodule SymphonyElixir.Orchestrator do
       last_codex_event: Map.get(running_entry, :last_codex_event),
       last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
     }
+
+    maybe_mark_issue_for_human_review(issue_id)
 
     %{
       state
@@ -1079,6 +1146,7 @@ defmodule SymphonyElixir.Orchestrator do
           issue_url: issue.url,
           error: "failed to spawn agent: #{inspect(reason)}",
           phase: phase,
+          labels: issue_labels(issue),
           review_note: review_note,
           worker_host: worker_host,
           sandbox: nil
@@ -1128,6 +1196,7 @@ defmodule SymphonyElixir.Orchestrator do
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
     sandbox = pick_retry_sandbox(previous_retry, metadata)
+    labels = pick_retry_labels(previous_retry, metadata)
     phase = pick_retry_phase(previous_retry, metadata)
     review_note = pick_retry_review_note(previous_retry, metadata)
 
@@ -1155,6 +1224,7 @@ defmodule SymphonyElixir.Orchestrator do
             worker_host: worker_host,
             workspace_path: workspace_path,
             sandbox: sandbox,
+            labels: labels,
             phase: phase,
             review_note: review_note
           })
@@ -1171,6 +1241,7 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(retry_entry, :worker_host),
           workspace_path: Map.get(retry_entry, :workspace_path),
           sandbox: Map.get(retry_entry, :sandbox),
+          labels: Map.get(retry_entry, :labels, []),
           phase: Map.get(retry_entry, :phase),
           review_note: Map.get(retry_entry, :review_note)
         }
@@ -1338,6 +1409,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pick_retry_sandbox(previous_retry, metadata) do
     metadata[:sandbox] || Map.get(previous_retry, :sandbox)
+  end
+
+  defp pick_retry_labels(previous_retry, metadata) do
+    labels = metadata[:labels] || Map.get(previous_retry, :labels, [])
+    if is_list(labels), do: labels, else: []
   end
 
   defp pick_retry_phase(previous_retry, metadata) do
@@ -1530,6 +1606,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: metadata.identifier,
           issue_url: metadata.issue.url,
           state: metadata.issue.state,
+          labels: issue_labels(metadata.issue),
           phase: Map.get(metadata, :phase, :builder),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
@@ -1558,6 +1635,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry, :identifier),
           issue_url: Map.get(retry, :issue_url),
           error: Map.get(retry, :error),
+          labels: Map.get(retry, :labels, []),
           phase: Map.get(retry, :phase, :builder),
           worker_host: Map.get(retry, :worker_host),
           workspace_path: Map.get(retry, :workspace_path),
@@ -1573,6 +1651,8 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(metadata, :identifier),
           issue_url: blocked_issue_url(metadata),
           state: blocked_issue_state(metadata),
+          labels: Map.get(metadata, :labels, []),
+          human_review_required: Map.get(metadata, :human_review_required, false),
           phase: Map.get(metadata, :phase),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),

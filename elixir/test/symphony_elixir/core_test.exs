@@ -682,7 +682,17 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "normal builder exit with blocked handoff text is retained as blocked instead of reviewer retry" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_human_review_label: "Human Review"
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
     issue_id = "issue-builder-blocked"
+    issue = %Issue{id: issue_id, identifier: "MT-BLOCKED", state: "In Progress"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :BuilderBlockedHandoffOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -699,7 +709,7 @@ defmodule SymphonyElixir.CoreTest do
       pid: self(),
       ref: ref,
       identifier: "MT-BLOCKED",
-      issue: %Issue{id: issue_id, identifier: "MT-BLOCKED", state: "Rework"},
+      issue: issue,
       phase: :builder,
       session_id: "thread-builder-blocked",
       codex_agent_text_tail: "Exit remains `Blocked`; real model-backed validation is waiting on KIN-95 provisioning.",
@@ -725,11 +735,14 @@ defmodule SymphonyElixir.CoreTest do
     assert %{
              identifier: "MT-BLOCKED",
              error: error,
-             phase: :builder
+             phase: :builder,
+             labels: ["human review"],
+             human_review_required: true
            } = state.blocked[issue_id]
 
     assert error =~ "agent reported blocked handoff"
     assert error =~ "KIN-95 provisioning"
+    assert_receive {:memory_tracker_label_add, ^issue_id, "human review"}
   end
 
   test "normal reviewer exit schedules builder fallback retry" do
