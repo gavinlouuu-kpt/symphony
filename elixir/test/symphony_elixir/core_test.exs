@@ -744,7 +744,7 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_after_in_range(due_at_ms, scheduled_after_ms, 500, 1_100)
   end
 
-  test "normal builder exit with blocked handoff text queues human-review reviewer phase" do
+  test "normal builder exit with blocked handoff text queues reviewer without human-review label" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
       tracker_human_review_label: "Human Review"
@@ -800,7 +800,7 @@ defmodule SymphonyElixir.CoreTest do
              identifier: "MT-BLOCKED",
              error: error,
              phase: :reviewer,
-             labels: ["human review"],
+             labels: [],
              review_note: review_note
            } = state.retry_attempts[issue_id]
 
@@ -809,6 +809,58 @@ defmodule SymphonyElixir.CoreTest do
     assert review_note =~ "runaway or invalid blocked-handoff loop"
     assert review_note =~ "GPU availability"
     assert review_note =~ "make it available to the retained CUA container"
+    refute_receive {:memory_tracker_label_add, ^issue_id, "human review"}, 50
+  end
+
+  test "reviewer blocked handoff marks issue for human review" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_human_review_label: "Human Review"
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue_id = "issue-reviewer-blocked"
+    issue = %Issue{id: issue_id, identifier: "MT-REVIEW-BLOCKED", state: "In Progress"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :ReviewerBlockedHandoffOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-REVIEW-BLOCKED",
+      issue: issue,
+      phase: :reviewer,
+      session_id: "thread-reviewer-blocked",
+      codex_agent_text_tail: "Blocked handoff: approved model assets are still unavailable.",
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert %{phase: :reviewer, human_review_required: true, labels: ["human review"]} = state.blocked[issue_id]
     assert_receive {:memory_tracker_label_add, ^issue_id, "human review"}
   end
 

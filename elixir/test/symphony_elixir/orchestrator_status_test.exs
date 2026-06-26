@@ -185,7 +185,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute Map.has_key?(state.blocked, issue_id)
     assert %{error: error, phase: :reviewer, labels: labels, review_note: review_note} = state.retry_attempts[issue_id]
     assert error =~ "KIN-95 provisioning"
-    assert labels == ["symphony:human-review"]
+    assert labels == []
     assert review_note =~ "GPU availability"
     assert review_note =~ "make it available to the retained CUA container"
   end
@@ -1141,7 +1141,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              Orchestrator.snapshot(orchestrator_name, 1_000)
   end
 
-  test "orchestrator blocks failed workers after app-server reports input required" do
+  test "orchestrator routes failed builder workers to reviewer after app-server reports input required" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
 
     issue_id = "issue-input-required"
@@ -1185,16 +1185,21 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = :sys.get_state(pid)
 
     refute Map.has_key?(state.running, issue_id)
-    refute Map.has_key?(state.retry_attempts, issue_id)
+    refute Map.has_key?(state.blocked, issue_id)
     assert MapSet.member?(state.claimed, issue_id)
 
     assert %{
              identifier: "MT-INPUT",
-             error: "codex turn requires operator input"
-           } = state.blocked[issue_id]
+             error: "codex turn requires operator input",
+             phase: :reviewer,
+             review_note: review_note
+           } = state.retry_attempts[issue_id]
+
+    assert review_note =~ "requires facilitation"
+    assert review_note =~ "Escalate to human review only if"
   end
 
-  test "orchestrator blocks normal worker exits after input required completion" do
+  test "orchestrator routes normal builder exits after input required completion to reviewer" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
 
     issue_id = "issue-input-required-normal"
@@ -1234,14 +1239,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = :sys.get_state(pid)
 
     refute Map.has_key?(state.running, issue_id)
-    refute Map.has_key?(state.retry_attempts, issue_id)
-    refute MapSet.member?(state.completed, issue_id)
+    refute Map.has_key?(state.blocked, issue_id)
+    assert MapSet.member?(state.completed, issue_id)
     assert MapSet.member?(state.claimed, issue_id)
 
     assert %{
              identifier: "MT-INPUT-NORMAL",
-             error: "codex turn requires operator input"
-           } = state.blocked[issue_id]
+             error: "codex turn requires operator input",
+             phase: :reviewer,
+             review_note: review_note
+           } = state.retry_attempts[issue_id]
+
+    assert review_note =~ "requires facilitation"
+    assert review_note =~ "Escalate to human review only if"
   end
 
   test "status dashboard renders offline marker to terminal" do

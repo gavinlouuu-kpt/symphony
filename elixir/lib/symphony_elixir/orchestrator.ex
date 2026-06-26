@@ -244,7 +244,11 @@ defmodule SymphonyElixir.Orchestrator do
 
     Logger.warning("Agent task blocked for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}")
 
-    block_issue_from_entry(state, issue_id, running_entry, error)
+    if running_entry_phase(running_entry) == :reviewer do
+      block_issue_from_entry(state, issue_id, running_entry, error)
+    else
+      queue_reviewer_handoff(state, issue_id, running_entry, error, input_required_review_note(running_entry, error))
+    end
   end
 
   defp block_agent_reported_handoff(state, issue_id, running_entry, session_id) do
@@ -252,8 +256,14 @@ defmodule SymphonyElixir.Orchestrator do
 
     Logger.warning("Agent task reported blocked handoff for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}; queuing reviewer phase")
 
-    maybe_mark_issue_for_human_review(issue_id)
+    if running_entry_phase(running_entry) == :reviewer do
+      block_issue_from_entry(state, issue_id, running_entry, error)
+    else
+      queue_reviewer_handoff(state, issue_id, running_entry, error, blocked_handoff_review_note(running_entry, error))
+    end
+  end
 
+  defp queue_reviewer_handoff(state, issue_id, running_entry, error, review_note) do
     state
     |> complete_issue(issue_id)
     |> schedule_issue_retry(issue_id, 1, %{
@@ -261,8 +271,8 @@ defmodule SymphonyElixir.Orchestrator do
       issue_url: Map.get(Map.get(running_entry, :issue, %{}), :url),
       delay_type: :review,
       phase: :reviewer,
-      labels: human_review_labels(issue_labels(Map.get(running_entry, :issue))),
-      review_note: blocked_handoff_review_note(running_entry, error),
+      labels: issue_labels(Map.get(running_entry, :issue)),
+      review_note: review_note,
       error: error,
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path),
@@ -828,6 +838,26 @@ defmodule SymphonyElixir.Orchestrator do
       - Check whether the task is blocked by GPU availability. Run appropriate host/container checks such as `nvidia-smi`, CUDA visibility, Docker GPU runtime/device exposure, and whether the KIN container can see the GPU.
       - If GPU is available on the host but missing from the KIN sandbox, make it available to the retained CUA container when safe to do so, then rerun the focused validation.
       - If GPU is not available or changing the container would be unsafe/destructive, document the blocker clearly and move the issue to Rework.
+      """,
+      previous_note
+    ]
+    |> Enum.reject(&blank_review_note?/1)
+    |> Enum.join("\n\n")
+  end
+
+  defp input_required_review_note(running_entry, error) do
+    previous_note = normalize_optional_review_note(Map.get(running_entry, :review_note))
+
+    [
+      """
+      The builder hit a blocker that requires facilitation before a human handoff is appropriate.
+
+      Orchestrator finding: #{error}
+
+      Reviewer focus:
+      - Inspect the retained CUA sandbox, logs, workpad, and issue dependencies.
+      - Resolve safe environment, dependency, validation, or workflow blockers directly where possible.
+      - Escalate to human review only if the reviewer verifies the blocker requires production access, sensitive data, destructive approval, credentials, unavailable hardware/assets, or another external decision.
       """,
       previous_note
     ]
