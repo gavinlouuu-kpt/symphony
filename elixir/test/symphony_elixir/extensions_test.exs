@@ -349,6 +349,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_identifier" => "MT-HTTP",
                  "issue_url" => "https://example.org/issues/MT-HTTP",
                  "state" => "In Progress",
+                 "phase" => "builder",
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "sandbox" => nil,
@@ -369,6 +370,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "attempt" => 2,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
+                 "phase" => "builder",
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "sandbox" => nil
@@ -381,6 +383,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_url" => "https://example.org/issues/MT-BLOCKED",
                  "state" => "In Progress",
                  "error" => "codex turn requires operator input",
+                 "phase" => "builder",
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "sandbox" => %{
@@ -456,6 +459,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "sandbox" => nil,
                "session_id" => "thread-http",
                "turn_count" => 7,
+               "phase" => "builder",
                "state" => "In Progress",
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",

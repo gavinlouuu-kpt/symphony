@@ -203,14 +203,19 @@ defmodule SymphonyElixir.Orchestrator do
     if input_required_blocker?(running_entry) do
       block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
     else
-      Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+      phase = running_entry_phase(running_entry)
+      next_phase = next_phase_after_normal_exit(phase)
+      delay_type = retry_delay_type_for_phase(next_phase)
+
+      Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id} phase=#{phase}; scheduling #{next_phase} phase check")
 
       state
       |> complete_issue(issue_id)
       |> schedule_issue_retry(issue_id, 1, %{
         identifier: running_entry.identifier,
         issue_url: running_entry.issue.url,
-        delay_type: :continuation,
+        delay_type: delay_type,
+        phase: next_phase,
         worker_host: Map.get(running_entry, :worker_host),
         workspace_path: Map.get(running_entry, :workspace_path),
         sandbox: Map.get(running_entry, :sandbox)
@@ -243,6 +248,7 @@ defmodule SymphonyElixir.Orchestrator do
       identifier: running_entry.identifier,
       issue_url: running_entry.issue.url,
       error: "agent exited: #{inspect(reason)}",
+      phase: running_entry_phase(running_entry),
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path),
       sandbox: Map.get(running_entry, :sandbox)
@@ -628,6 +634,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: identifier,
           issue_url: running_entry.issue.url,
           error: "stalled for #{elapsed_ms}ms without codex activity",
+          phase: running_entry_phase(running_entry),
           worker_host: Map.get(running_entry, :worker_host),
           workspace_path: Map.get(running_entry, :workspace_path),
           sandbox: Map.get(running_entry, :sandbox)
@@ -755,6 +762,7 @@ defmodule SymphonyElixir.Orchestrator do
       identifier: Map.get(running_entry, :identifier, issue_id),
       issue: Map.get(running_entry, :issue),
       worker_host: Map.get(running_entry, :worker_host),
+      phase: running_entry_phase(running_entry),
       workspace_path: Map.get(running_entry, :workspace_path),
       sandbox: Map.get(running_entry, :sandbox),
       session_id: running_entry_session_id(running_entry),
@@ -914,10 +922,10 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil, phase \\ :builder) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, normalize_phase(phase))
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -934,7 +942,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, phase) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -943,18 +951,18 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, phase)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, phase) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host, phase: phase)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
 
-        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} phase=#{phase} worker_host=#{worker_host || "local"}")
 
         running =
           Map.put(state.running, issue.id, %{
@@ -963,6 +971,7 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: issue.identifier,
             issue: issue,
             worker_host: worker_host,
+            phase: phase,
             workspace_path: nil,
             sandbox: nil,
             session_id: nil,
@@ -996,6 +1005,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: issue.identifier,
           issue_url: issue.url,
           error: "failed to spawn agent: #{inspect(reason)}",
+          phase: phase,
           worker_host: worker_host,
           sandbox: nil
         })
@@ -1044,6 +1054,7 @@ defmodule SymphonyElixir.Orchestrator do
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
     sandbox = pick_retry_sandbox(previous_retry, metadata)
+    phase = pick_retry_phase(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1068,7 +1079,8 @@ defmodule SymphonyElixir.Orchestrator do
             error: error,
             worker_host: worker_host,
             workspace_path: workspace_path,
-            sandbox: sandbox
+            sandbox: sandbox,
+            phase: phase
           })
     }
   end
@@ -1082,7 +1094,8 @@ defmodule SymphonyElixir.Orchestrator do
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
           workspace_path: Map.get(retry_entry, :workspace_path),
-          sandbox: Map.get(retry_entry, :sandbox)
+          sandbox: Map.get(retry_entry, :sandbox),
+          phase: Map.get(retry_entry, :phase)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1177,7 +1190,7 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata[:phase])}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -1204,7 +1217,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    if metadata[:delay_type] == :continuation and attempt == 1 do
+    if metadata[:delay_type] in [:continuation, :review] and attempt == 1 do
       @continuation_retry_delay_ms
     else
       failure_retry_delay(attempt)
@@ -1249,6 +1262,28 @@ defmodule SymphonyElixir.Orchestrator do
   defp pick_retry_sandbox(previous_retry, metadata) do
     metadata[:sandbox] || Map.get(previous_retry, :sandbox)
   end
+
+  defp pick_retry_phase(previous_retry, metadata) do
+    metadata
+    |> Map.get(:phase, Map.get(previous_retry, :phase, :builder))
+    |> normalize_phase()
+  end
+
+  defp running_entry_phase(running_entry) when is_map(running_entry) do
+    running_entry
+    |> Map.get(:phase, :builder)
+    |> normalize_phase()
+  end
+
+  defp normalize_phase(:reviewer), do: :reviewer
+  defp normalize_phase("reviewer"), do: :reviewer
+  defp normalize_phase(_phase), do: :builder
+
+  defp next_phase_after_normal_exit(:reviewer), do: :builder
+  defp next_phase_after_normal_exit(_phase), do: :reviewer
+
+  defp retry_delay_type_for_phase(:reviewer), do: :review
+  defp retry_delay_type_for_phase(_phase), do: :continuation
 
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
 
@@ -1405,6 +1440,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: metadata.identifier,
           issue_url: metadata.issue.url,
           state: metadata.issue.state,
+          phase: Map.get(metadata, :phase, :builder),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           sandbox: Map.get(metadata, :sandbox),
@@ -1432,6 +1468,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry, :identifier),
           issue_url: Map.get(retry, :issue_url),
           error: Map.get(retry, :error),
+          phase: Map.get(retry, :phase, :builder),
           worker_host: Map.get(retry, :worker_host),
           workspace_path: Map.get(retry, :workspace_path),
           sandbox: Map.get(retry, :sandbox)
@@ -1446,6 +1483,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(metadata, :identifier),
           issue_url: blocked_issue_url(metadata),
           state: blocked_issue_state(metadata),
+          phase: Map.get(metadata, :phase),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           sandbox: Map.get(metadata, :sandbox),

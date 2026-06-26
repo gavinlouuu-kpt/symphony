@@ -640,7 +640,7 @@ defmodule SymphonyElixir.CoreTest do
              AgentRunner.continue_with_issue_for_test(issue, fetcher)
   end
 
-  test "normal worker exit schedules active-state continuation retry" do
+  test "normal builder exit schedules reviewer phase retry" do
     issue_id = "issue-resume"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :ContinuationOrchestrator)
@@ -676,8 +676,48 @@ defmodule SymphonyElixir.CoreTest do
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
-    assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
+    assert %{attempt: 1, due_at_ms: due_at_ms, phase: :reviewer} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
+    assert_due_after_in_range(due_at_ms, scheduled_after_ms, 500, 1_100)
+  end
+
+  test "normal reviewer exit schedules builder fallback retry" do
+    issue_id = "issue-reviewed-still-active"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :ReviewerContinuationOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-559",
+      phase: :reviewer,
+      issue: %Issue{id: issue_id, identifier: "MT-559", state: "In Progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    scheduled_after_ms = System.monotonic_time(:millisecond)
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.running, issue_id)
+    assert %{attempt: 1, due_at_ms: due_at_ms, phase: :builder} = state.retry_attempts[issue_id]
     assert_due_after_in_range(due_at_ms, scheduled_after_ms, 500, 1_100)
   end
 
@@ -1490,6 +1530,108 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner reviewer phase uses a separate one-turn review prompt" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-reviewer-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-reviewer.trace")
+
+      File.mkdir_p!(test_root)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEX_REVIEW_TRACE:-/tmp/codex-reviewer.trace}"
+      printf 'RUN\\n' >> "$trace_file"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-review"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-review-1"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEX_REVIEW_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEX_REVIEW_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        max_turns: 3,
+        prompt: "Ticket {{ issue.identifier }}\n{{ issue.description }}"
+      )
+
+      parent = self()
+
+      issue = %Issue{
+        id: "issue-reviewer-phase",
+        identifier: "MT-249",
+        title: "Review separately",
+        description: "Reviewer should inspect evidence",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-249",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 phase: :reviewer,
+                 issue_state_fetcher: fn [_issue_id] ->
+                   send(parent, :reviewer_state_fetch)
+                   {:ok, [%{issue | state: "In Progress"}]}
+                 end
+               )
+
+      refute_receive :reviewer_state_fetch, 50
+
+      lines = File.read!(trace_file) |> String.split("\n", trim: true)
+      assert length(Enum.filter(lines, &String.starts_with?(&1, "RUN"))) == 1
+
+      turn_texts =
+        lines
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/start"))
+        |> Enum.map(fn payload ->
+          get_in(payload, ["params", "input"])
+          |> Enum.map_join("\n", &Map.get(&1, "text", ""))
+        end)
+
+      assert length(turn_texts) == 1
+      reviewer_text = List.first(turn_texts)
+      assert reviewer_text =~ "Reviewer phase:"
+      assert reviewer_text =~ "You are a separate reviewer"
+      assert reviewer_text =~ "move the issue to In Review"
+      assert reviewer_text =~ "Ticket MT-249"
+      refute reviewer_text =~ "Continuation guidance:"
+    after
+      System.delete_env("SYMP_TEST_CODEX_REVIEW_TRACE")
       File.rm_rf(test_root)
     end
   end

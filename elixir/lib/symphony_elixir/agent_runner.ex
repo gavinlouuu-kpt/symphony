@@ -9,6 +9,7 @@ defmodule SymphonyElixir.AgentRunner do
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
+  @type phase :: :builder | :reviewer
 
   @doc false
   @spec continue_with_issue_for_test(Issue.t(), ([String.t()] -> term())) ::
@@ -107,19 +108,25 @@ defmodule SymphonyElixir.AgentRunner do
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace, _sandbox), do: :ok
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host, sandbox) do
-    max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
+    phase = normalize_phase(Keyword.get(opts, :phase, :builder))
+    max_turns = max_turns_for_phase(phase, opts)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
     codex_context = codex_context!(issue, workspace, worker_host, sandbox)
 
     try do
       with {:ok, session} <- AppServer.start_session(codex_context.workspace, codex_context.start_opts) do
         try do
+          opts =
+            opts
+            |> Keyword.put(:phase, phase)
+            |> Keyword.put(:prompt_prefix, codex_context.prompt_prefix)
+
           do_run_codex_turns(
             session,
             workspace,
             issue,
             codex_update_recipient,
-            Keyword.put(opts, :prompt_prefix, codex_context.prompt_prefix),
+            opts,
             issue_state_fetcher,
             1,
             max_turns
@@ -135,6 +142,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+    phase = Keyword.get(opts, :phase, :builder)
 
     with {:ok, turn_session} <-
            AppServer.run_turn(
@@ -143,40 +151,48 @@ defmodule SymphonyElixir.AgentRunner do
              issue,
              on_message: codex_message_handler(codex_update_recipient, issue)
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} phase=#{phase} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      if phase == :reviewer do
+        :ok
+      else
+        case continue_with_issue?(issue, issue_state_fetcher) do
+          {:continue, refreshed_issue} when turn_number < max_turns ->
+            Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_codex_turns(
-            app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+            do_run_codex_turns(
+              app_session,
+              workspace,
+              refreshed_issue,
+              codex_update_recipient,
+              opts,
+              issue_state_fetcher,
+              turn_number + 1,
+              max_turns
+            )
 
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+          {:continue, refreshed_issue} ->
+            Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
 
-          :ok
+            :ok
 
-        {:done, _refreshed_issue} ->
-          :ok
+          {:done, _refreshed_issue} ->
+            :ok
 
-        {:error, reason} ->
-          {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     end
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns) do
     prompt_prefix = Keyword.get(opts, :prompt_prefix, "")
-    prompt_prefix <> PromptBuilder.build_prompt(issue, opts)
+
+    case Keyword.get(opts, :phase, :builder) do
+      :reviewer -> prompt_prefix <> reviewer_prompt(issue, opts)
+      _ -> prompt_prefix <> PromptBuilder.build_prompt(issue, opts)
+    end
   end
 
   defp build_turn_prompt(_issue, opts, turn_number, max_turns) do
@@ -193,6 +209,38 @@ defmodule SymphonyElixir.AgentRunner do
       - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
       """
   end
+
+  defp reviewer_prompt(issue, opts) do
+    base_prompt = PromptBuilder.build_prompt(issue, opts)
+
+    """
+    Reviewer phase:
+
+    You are a separate reviewer for this issue, not the builder that just worked on it. Start from the repository, workpad, sandbox state, tests, logs, and evidence artifacts. Do not rely on the builder's conclusions without checking them.
+
+    Review goals:
+    - Reconstruct the issue's acceptance criteria from the ticket and workpad.
+    - Inspect the actual implementation, tests, UI/noVNC evidence when relevant, and recorded artifacts.
+    - Run focused verification commands that are appropriate for the changed surface.
+    - Look for shared causes, missing regression coverage, unsafe shortcuts, and incomplete user-facing workflows.
+
+    Decision:
+    - If the work passes, update the issue/workpad with the review evidence and move the issue to In Review.
+    - If the work fails or is blocked, update the issue/workpad with concrete findings and move the issue to Rework.
+    - Do not mark the issue Done or close/delete the sandbox from the reviewer phase.
+
+    Original issue context follows.
+
+    #{base_prompt}
+    """
+  end
+
+  defp normalize_phase(:reviewer), do: :reviewer
+  defp normalize_phase("reviewer"), do: :reviewer
+  defp normalize_phase(_phase), do: :builder
+
+  defp max_turns_for_phase(:reviewer, _opts), do: 1
+  defp max_turns_for_phase(:builder, opts), do: Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do

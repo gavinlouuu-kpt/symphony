@@ -94,8 +94,10 @@ No description provided.
 
 Closed-loop operating contract:
 
-Symphony is a loop runner. Do not treat this as a one-shot prompt. Run the issue through the loop
-below until it reaches Review, Rework, Done, or a blocked handoff.
+Symphony is a loop runner. Do not treat this as a one-shot prompt. Builder and reviewer are separate
+phases. The builder runs the issue through the loop below until it is ready for independent review,
+Rework, Done, or a blocked handoff. After a normal builder exit, Symphony starts a fresh reviewer
+session against the same CUA sandbox and evidence.
 
 1. Select and orient
    - Read the issue, existing workpad, repository state, and current branch before changing code.
@@ -128,14 +130,23 @@ below until it reaches Review, Rework, Done, or a blocked handoff.
 6. Present
    - Update the single Linear workpad with: phase, acceptance checklist, edge-case checklist, commands run, evidence links/paths, remaining risks, and next decision.
    - Push branch/PR when repo auth allows. If push is blocked, persist commits as bundles/patches and document exact paths.
-   - Move the issue to the real review state only after acceptance criteria pass or after a clearly documented blocked handoff.
+   - Exit normally only after acceptance criteria pass or after a clearly documented blocked handoff so the separate reviewer phase can inspect the result.
 
 7. Decide exactly one loop exit
    - `Continue`: more implementation or validation remains; keep working in the same sandbox.
-   - `Rework`: validation or review failed; keep the sandbox and fix the root cause.
-   - `Review`: validation passed; stop the agent, keep the sandbox alive, and leave evidence visible in the dashboard.
+   - `Rework`: validation failed; keep the sandbox and fix the root cause.
+   - `Review`: validation passed; stop the builder turn, keep the sandbox alive, and leave evidence visible in the dashboard for the separate reviewer.
    - `Blocked`: external input, auth, secrets, hardware, production access, or destructive approval is required; document the blocker and stop.
    - `Done`: only after human/project acceptance; terminal cleanup may close the sandbox.
+
+Reviewer phase:
+
+1. Start from the same sandbox/workspace, workpad, branch, validation logs, and dashboard evidence.
+2. Reconstruct the acceptance criteria and risk-based edge cases. Do not rely on the builder's summary without checking it.
+3. Run focused verification and use `sandbox_visible_exec` for UI, desktop, browser, demo, or real-user workflows.
+4. If the work passes, update the workpad with reviewer evidence and move the issue to `In Review`.
+5. If the work fails or is blocked, update the workpad with concrete findings and move the issue to `Rework`.
+6. Do not mark the issue `Done` or close/delete the sandbox from the reviewer phase.
 
 Safety rules:
 

@@ -109,6 +109,7 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_identifier: entry.identifier,
       issue_url: Map.get(entry, :issue_url),
       state: entry.state,
+      phase: format_phase(Map.get(entry, :phase)),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       sandbox: sandbox_payload(Map.get(entry, :sandbox)),
@@ -134,6 +135,7 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
+      phase: format_phase(Map.get(entry, :phase)),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       sandbox: sandbox_payload(Map.get(entry, :sandbox))
@@ -147,6 +149,7 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_url: Map.get(entry, :issue_url),
       state: entry.state,
       error: entry.error,
+      phase: format_phase(Map.get(entry, :phase)),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       sandbox: sandbox_payload(Map.get(entry, :sandbox)),
@@ -165,6 +168,7 @@ defmodule SymphonyElixirWeb.Presenter do
       sandbox: sandbox_payload(Map.get(running, :sandbox)),
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
+      phase: format_phase(Map.get(running, :phase)),
       state: running.state,
       started_at: iso8601(running.started_at),
       last_event: running.last_codex_event,
@@ -183,6 +187,7 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: retry.attempt,
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
+      phase: format_phase(Map.get(retry, :phase)),
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path),
       sandbox: sandbox_payload(Map.get(retry, :sandbox))
@@ -197,6 +202,7 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: blocked.session_id,
       state: blocked.state,
       error: blocked.error,
+      phase: format_phase(Map.get(blocked, :phase)),
       blocked_at: iso8601(blocked.blocked_at),
       last_event: blocked.last_codex_event,
       last_message: summarize_message(blocked.last_codex_message),
@@ -245,6 +251,12 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp sandbox_payload(_sandbox), do: nil
+
+  defp format_phase(:reviewer), do: "reviewer"
+  defp format_phase("reviewer"), do: "reviewer"
+  defp format_phase(:builder), do: "builder"
+  defp format_phase("builder"), do: "builder"
+  defp format_phase(_phase), do: "builder"
 
   defp sandbox_inventory(snapshot) do
     []

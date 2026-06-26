@@ -158,8 +158,8 @@ for completion, and leaves the terminal open for review.
 
 ## Closed-Loop Workflow
 
-The project template treats Symphony as a loop runner, not a one-shot prompt runner. Each issue should
-move through this loop:
+The project template treats Symphony as a loop runner, not a one-shot prompt runner. Each issue runs
+as a builder phase followed by a separate reviewer phase. The builder should move through this loop:
 
 ```text
 Discover -> Prove -> Patch -> Probe -> Present -> Continue | Rework | Review | Blocked | Done
@@ -170,20 +170,24 @@ Discover -> Prove -> Patch -> Probe -> Present -> Continue | Rework | Review | B
 - `Patch`: implement the smallest coherent slice that addresses the root cause.
 - `Probe`: run focused validation, regression checks, and `sandbox_visible_exec` for UI/demo/real-user paths.
 - `Present`: update the Linear workpad with checklist status, commands, evidence, risks, and next decision.
+- `Review`: Symphony starts a fresh reviewer Codex session after a normal builder exit. The reviewer
+  inspects the same sandbox and evidence, then moves the issue to `In Review` on pass or `Rework` on
+  failure/blocker.
 
 Recommended Linear state mapping:
 
 ```text
 Todo        -> eligible for dispatch
-In Progress -> active agent loop
-In Review   -> agent stopped, sandbox retained, evidence visible
+In Progress -> active builder/reviewer loop
+In Review   -> reviewer passed, agent stopped, sandbox retained, evidence visible
 Rework      -> resume the same issue/sandbox and fix review or validation failures
 Done        -> terminal cleanup may close the sandbox
 ```
 
-Keep `In Review` out of `tracker.active_states` unless you intentionally want review issues to dispatch
-again. The dashboard inventories retained CUA containers separately, so review sandboxes can remain
-visible without counting as running agents.
+Keep `In Review` out of `tracker.active_states`. The reviewer phase will move passing issues there,
+and the next orchestrator check will release the active claim while keeping the CUA sandbox visible.
+The dashboard inventories retained CUA containers separately, so review sandboxes can remain visible
+without counting as running agents.
 
 Evidence files placed in `SYMPHONY_EVIDENCE_ROOT` with the issue prefix, for example
 `KIN-94-visible-smoke.mp4`, are linked from the issue's CUA sandbox row in the dashboard.

@@ -195,6 +195,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <col style="width: 12rem;" />
                   <col style="width: 11rem;" />
                   <col style="width: 8rem;" />
+                  <col style="width: 7rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
                   <col />
@@ -204,6 +205,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr>
                     <th>Issue</th>
                     <th>Sandbox</th>
+                    <th>Phase</th>
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
@@ -221,6 +223,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td>
                       <.sandbox_links sandbox={entry.sandbox} />
+                    </td>
+                    <td>
+                      <span class={state_badge_class(entry.phase)}>
+                        <%= entry.phase %>
+                      </span>
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state)}>
@@ -289,6 +296,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr>
                     <th>Issue</th>
                     <th>Sandbox</th>
+                    <th>Phase</th>
                     <th>State</th>
                     <th>Session</th>
                     <th>Blocked at</th>
@@ -306,6 +314,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td>
                       <.sandbox_links sandbox={entry.sandbox} />
+                    </td>
+                    <td>
+                      <span class={state_badge_class(entry.phase)}>
+                        <%= entry.phase %>
+                      </span>
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state || "Blocked")}>
@@ -367,6 +380,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr>
                     <th>Issue</th>
                     <th>Sandbox</th>
+                    <th>Phase</th>
                     <th>Attempt</th>
                     <th>Due at</th>
                     <th>Error</th>
@@ -382,6 +396,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td>
                       <.sandbox_links sandbox={entry.sandbox} />
+                    </td>
+                    <td>
+                      <span class={state_badge_class(entry.phase)}>
+                        <%= entry.phase %>
+                      </span>
                     </td>
                     <td><%= entry.attempt %></td>
                     <td class="mono"><%= entry.due_at || "n/a" %></td>
