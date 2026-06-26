@@ -6,6 +6,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   use Phoenix.Controller, formats: [:json]
 
   alias Plug.Conn
+  alias SymphonyElixir.Orchestrator
   alias SymphonyElixirWeb.{Endpoint, Presenter}
 
   @spec state(Conn.t(), map()) :: Conn.t()
@@ -27,6 +28,25 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   @spec refresh(Conn.t(), map()) :: Conn.t()
   def refresh(conn, _params) do
     case Presenter.refresh_payload(orchestrator()) do
+      {:ok, payload} ->
+        conn
+        |> put_status(202)
+        |> json(payload)
+
+      {:error, :unavailable} ->
+        error_response(conn, 503, "orchestrator_unavailable", "Orchestrator is unavailable")
+    end
+  end
+
+  @spec console(Conn.t(), map()) :: Conn.t()
+  def console(conn, params) do
+    request = %{
+      target: Map.get(params, "target"),
+      issue_identifier: Map.get(params, "issue_identifier"),
+      body: Map.get(params, "body")
+    }
+
+    case Orchestrator.review_console_message(orchestrator(), request) do
       {:ok, payload} ->
         conn
         |> put_status(202)

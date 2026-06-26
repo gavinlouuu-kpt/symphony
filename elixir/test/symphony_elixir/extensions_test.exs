@@ -75,6 +75,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
+
+    def handle_call({:review_console_message, request}, _from, state) do
+      reply = Keyword.get(state, :console, %{role: "orchestrator", body: "console ok"})
+      {:reply, {:ok, Map.put(reply, :request, request)}, state}
+    end
   end
 
   setup do
@@ -511,6 +516,23 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{"queued" => true, "coalesced" => false, "operations" => ["poll", "reconcile"]} =
              json_response(conn, 202)
+
+    conn =
+      post(build_conn(), "/api/v1/console", %{
+        "target" => "reviewer",
+        "issue_identifier" => "MT-HTTP",
+        "body" => "review this"
+      })
+
+    assert %{
+             "role" => "orchestrator",
+             "body" => "console ok",
+             "request" => %{
+               "target" => "reviewer",
+               "issue_identifier" => "MT-HTTP",
+               "body" => "review this"
+             }
+           } = json_response(conn, 202)
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -521,6 +543,9 @@ defmodule SymphonyElixir.ExtensionsTest do
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(get(build_conn(), "/api/v1/refresh"), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+
+    assert json_response(get(build_conn(), "/api/v1/console"), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(post(build_conn(), "/", %{}), 405) ==
@@ -541,6 +566,14 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
 
     assert json_response(post(build_conn(), "/api/v1/refresh", %{}), 503) ==
+             %{
+               "error" => %{
+                 "code" => "orchestrator_unavailable",
+                 "message" => "Orchestrator is unavailable"
+               }
+             }
+
+    assert json_response(post(build_conn(), "/api/v1/console", %{}), 503) ==
              %{
                "error" => %{
                  "code" => "orchestrator_unavailable",
