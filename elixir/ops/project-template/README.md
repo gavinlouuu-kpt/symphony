@@ -221,6 +221,14 @@ Discord message -> OpenClaw message:received hook -> Symphony profile intake URL
   -> GitHub issue -> Symphony GitHub tracker poll -> implementation agent
 ```
 
+Normal project discussion should stay in Discord until Gavin explicitly asks to
+create or route the work. Configure the project-channel OpenClaw skill to answer
+discussion with a short preliminary research pass, not a generic acknowledgement:
+inspect the local reference checkout, `AGENTS.md`, relevant docs/files, and
+existing issues/PRs when `gh` is available; then summarize likely affected
+surfaces, risks, unknowns, and validation direction. Only the explicit intake
+trigger should create the tracked Symphony/GitHub issue.
+
 Enable intake on a GitHub-backed Symphony instance:
 
 ```bash

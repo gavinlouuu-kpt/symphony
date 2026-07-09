@@ -14,6 +14,11 @@ Listens for inbound channel messages that start with `issue`, `/issue`, `gh issu
 `github issue`, or `open issue`, creates a GitHub issue through the configured Symphony
 profile, and replies to the originating channel with the new issue URL.
 
+This hook intentionally ignores ordinary project discussion. The project-channel
+OpenClaw skill should handle discussion with a concise preliminary research answer
+from the local reference checkout, docs, and related issues/PRs instead of a generic
+acknowledgement. Only explicit intake or approval triggers should reach this hook.
+
 Feature approval phrases are also issue intake triggers in project channels:
 `create feature`, `make feature`, `new feature`, `feature request`,
 `create ticket`, `make ticket`, `create task`, `make task`, `implement this`,
