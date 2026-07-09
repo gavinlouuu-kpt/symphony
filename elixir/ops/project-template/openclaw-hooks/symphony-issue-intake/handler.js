@@ -23,7 +23,7 @@ module.exports = async function handler(event) {
     return;
   }
 
-  const profile = resolveProfile(context);
+  const profile = await resolveProfile(context);
 
   if (!profile || !profile.url || !profile.token) {
     await sendReply(profile, context, "Symphony issue intake is not configured for this channel.");
@@ -282,13 +282,33 @@ function parseJsonFromOutput(output) {
   }
 }
 
-function resolveProfile(context) {
+async function resolveProfile(context) {
   const config = loadProfilesConfig();
   const channelId = String(context.channelId || "");
 
   if (config && config.profiles) {
-    const profileName = (config.channels && config.channels[channelId]) || config.default;
-    return normalizeProfile(config.profiles[profileName], channelId);
+    const directProfile = resolveConfiguredProfile(config, channelId);
+
+    if (directProfile) {
+      return normalizeProfile(directProfile, channelId);
+    }
+
+    for (const parentChannelId of explicitParentChannelIds(context)) {
+      const parentProfile = resolveConfiguredProfile(config, parentChannelId);
+
+      if (parentProfile) {
+        return normalizeProfile(parentProfile, parentChannelId);
+      }
+    }
+
+    const discoveredParentId = await discoverParentChannelId(context, channelId);
+    const parentProfile = resolveConfiguredProfile(config, discoveredParentId);
+
+    if (parentProfile) {
+      return normalizeProfile(parentProfile, discoveredParentId);
+    }
+
+    return null;
   }
 
   return normalizeProfile({
@@ -299,6 +319,13 @@ function resolveProfile(context) {
     target: process.env.SYMPHONY_OPENCLAW_TARGET,
     labels: parseJsonArray(process.env.SYMPHONY_OPENCLAW_INTAKE_LABELS)
   }, channelId);
+}
+
+function resolveConfiguredProfile(config, channelId) {
+  const profileName =
+    (channelId && config.channels && config.channels[channelId]) || config.default;
+
+  return profileName ? config.profiles[profileName] : null;
 }
 
 function loadProfilesConfig() {
@@ -335,6 +362,74 @@ function normalizeProfile(profile, channelId) {
     target: profile.target || process.env.SYMPHONY_OPENCLAW_TARGET || defaultTarget(channelId),
     labels: Array.isArray(profile.labels) ? profile.labels : []
   };
+}
+
+function explicitParentChannelIds(context) {
+  const metadata = context.metadata || {};
+  const channel = context.channel || metadata.channel || {};
+
+  return uniq([
+    context.parentChannelId,
+    context.parent_channel_id,
+    context.parentId,
+    context.parent_id,
+    metadata.parentChannelId,
+    metadata.parent_channel_id,
+    metadata.parentId,
+    metadata.parent_id,
+    channel.parentChannelId,
+    channel.parent_channel_id,
+    channel.parentId,
+    channel.parent_id
+  ]);
+}
+
+async function discoverParentChannelId(context, channelId) {
+  if (!channelId) {
+    return "";
+  }
+
+  const command = splitCommand(process.env.SYMPHONY_OPENCLAW_COMMAND || "openclaw");
+  const executable = command[0];
+  const baseArgs = command.slice(1);
+  const args = baseArgs.concat([
+    "message",
+    "channel",
+    "info",
+    "--channel",
+    process.env.SYMPHONY_OPENCLAW_CHANNEL || "discord",
+    "--target",
+    defaultTarget(channelId),
+    "--json"
+  ]);
+
+  if (context.account || process.env.SYMPHONY_OPENCLAW_ACCOUNT) {
+    args.splice(args.indexOf("--target"), 0, "--account", context.account || process.env.SYMPHONY_OPENCLAW_ACCOUNT);
+  }
+
+  const output = await execFileCapture(executable, args);
+  const payload = parseJsonFromOutput(output.stdout);
+  const channel = payload?.payload?.channel || payload?.channel;
+
+  return String(channel?.parent_id || channel?.parentId || "");
+}
+
+function uniq(values) {
+  const seen = new Set();
+  const result = [];
+
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    result.push(normalized);
+  }
+
+  return result;
 }
 
 function defaultTarget(channelId) {
