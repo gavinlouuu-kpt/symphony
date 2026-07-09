@@ -128,6 +128,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   @spec tool_specs() :: [map()]
+  @spec tool_specs(keyword()) :: [map()]
   def tool_specs(opts \\ []) do
     base_specs = [
       %{
@@ -167,7 +168,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp execute_linear_graphql(arguments, opts) do
-    linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
+    linear_client = Keyword.get(opts, :linear_client, &configured_linear_graphql/3)
 
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
          {:ok, response} <- linear_client.(query, variables, []) do
@@ -175,6 +176,21 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     else
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp configured_linear_graphql(query, variables, opts) do
+    client_module = Application.get_env(:symphony_elixir, :linear_client_module, Client)
+
+    cond do
+      function_exported?(client_module, :graphql, 3) ->
+        client_module.graphql(query, variables, opts)
+
+      function_exported?(client_module, :graphql, 2) ->
+        client_module.graphql(query, variables)
+
+      true ->
+        {:error, {:missing_linear_graphql_client, client_module}}
     end
   end
 
@@ -442,10 +458,35 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp encode_payload(payload) when is_map(payload) or is_list(payload) do
-    Jason.encode!(payload, pretty: true)
+    payload
+    |> sanitize_for_json()
+    |> Jason.encode!(pretty: true)
   end
 
   defp encode_payload(payload), do: inspect(payload)
+
+  defp sanitize_for_json(%{} = map) do
+    Map.new(map, fn {key, value} ->
+      {sanitize_json_key(key), sanitize_for_json(value)}
+    end)
+  end
+
+  defp sanitize_for_json(list) when is_list(list) do
+    Enum.map(list, &sanitize_for_json/1)
+  end
+
+  defp sanitize_for_json(value) when is_binary(value) do
+    if String.valid?(value) do
+      value
+    else
+      String.replace_invalid(value)
+    end
+  end
+
+  defp sanitize_for_json(value), do: value
+
+  defp sanitize_json_key(key) when is_binary(key), do: sanitize_for_json(key)
+  defp sanitize_json_key(key), do: key
 
   defp tool_error_payload(:missing_query) do
     %{

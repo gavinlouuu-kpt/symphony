@@ -4,6 +4,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
+  alias SymphonyElixir.Github.Adapter, as: GithubAdapter
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
 
@@ -36,6 +37,33 @@ defmodule SymphonyElixir.ExtensionsTest do
         _ ->
           Process.get({__MODULE__, :graphql_result})
       end
+    end
+  end
+
+  defmodule FakeGithubClient do
+    def fetch_candidate_issues do
+      send(self(), :github_fetch_candidate_issues_called)
+      {:ok, [:github_candidate]}
+    end
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:github_fetch_issues_by_states_called, states})
+      {:ok, states}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:github_fetch_issue_states_by_ids_called, issue_ids})
+      {:ok, issue_ids}
+    end
+
+    def create_comment(issue_id, body) do
+      send(self(), {:github_create_comment_called, issue_id, body})
+      :ok
+    end
+
+    def update_issue_state(issue_id, state_name) do
+      send(self(), {:github_update_issue_state_called, issue_id, state_name})
+      :ok
     end
   end
 
@@ -79,12 +107,19 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    github_client_module = Application.get_env(:symphony_elixir, :github_client_module)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(github_client_module) do
+        Application.delete_env(:symphony_elixir, :github_client_module)
+      else
+        Application.put_env(:symphony_elixir, :github_client_module, github_client_module)
       end
     end)
 
@@ -181,7 +216,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     WorkflowStore.force_reload()
   end
 
-  test "tracker delegates to memory and linear adapters" do
+  test "tracker delegates to memory, github, and linear adapters" do
     issue = %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"}
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue, %{id: "ignored"}])
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
@@ -203,6 +238,28 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+
+    Application.put_env(:symphony_elixir, :github_client_module, FakeGithubClient)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: "github-token",
+      tracker_project_slug: "owner/repo",
+      tracker_active_states: ["open"],
+      tracker_terminal_states: ["closed"]
+    )
+
+    assert SymphonyElixir.Tracker.adapter() == GithubAdapter
+    assert {:ok, [:github_candidate]} = SymphonyElixir.Tracker.fetch_candidate_issues()
+    assert_receive :github_fetch_candidate_issues_called
+    assert {:ok, ["open"]} = SymphonyElixir.Tracker.fetch_issues_by_states(["open"])
+    assert_receive {:github_fetch_issues_by_states_called, ["open"]}
+    assert {:ok, ["github:owner/repo#1"]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["github:owner/repo#1"])
+    assert_receive {:github_fetch_issue_states_by_ids_called, ["github:owner/repo#1"]}
+    assert :ok = SymphonyElixir.Tracker.create_comment("github:owner/repo#1", "comment")
+    assert_receive {:github_create_comment_called, "github:owner/repo#1", "comment"}
+    assert :ok = SymphonyElixir.Tracker.update_issue_state("github:owner/repo#1", "closed")
+    assert_receive {:github_update_issue_state_called, "github:owner/repo#1", "closed"}
   end
 
   test "linear adapter delegates reads and validates mutation responses" do

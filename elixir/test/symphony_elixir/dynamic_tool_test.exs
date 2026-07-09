@@ -3,6 +3,16 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   alias SymphonyElixir.Codex.DynamicTool
 
+  defmodule ConfiguredLinearClient do
+    def graphql(query, variables, opts) do
+      if recipient = Application.get_env(:symphony_elixir, :dynamic_tool_test_recipient) do
+        send(recipient, {:configured_linear_client_called, query, variables, opts})
+      end
+
+      {:ok, %{"data" => %{"configured" => true}}}
+    end
+  end
+
   test "tool_specs advertises the linear_graphql input contract" do
     assert [
              %{
@@ -110,6 +120,38 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert trace =~ "printf ok"
   end
 
+  test "sandbox_exec sanitizes non UTF-8 command output" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dynamic-tool-sandbox-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+
+    File.write!(Path.join(test_root, "ssh"), """
+    #!/bin/sh
+    printf '\\270bad\\n'
+    exit 0
+    """)
+
+    File.chmod!(Path.join(test_root, "ssh"), 0o755)
+    System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+    response =
+      DynamicTool.execute("sandbox_exec", %{"command" => "rg bad"}, sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"})
+
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"status" => 0, "output" => "\uFFFDbad\n"}
+  end
+
   test "sandbox_visible_exec launches a desktop terminal through ssh" do
     test_root =
       Path.join(
@@ -187,6 +229,29 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["success"] == true
     assert Jason.decode!(response["output"]) == %{"data" => %{"viewer" => %{"id" => "usr_123"}}}
     assert response["contentItems"] == [%{"type" => "inputText", "text" => response["output"]}]
+  end
+
+  test "linear_graphql uses configured linear client module by default" do
+    previous_linear_client = Application.get_env(:symphony_elixir, :linear_client_module)
+    previous_recipient = Application.get_env(:symphony_elixir, :dynamic_tool_test_recipient)
+
+    on_exit(fn ->
+      restore_app_env(:linear_client_module, previous_linear_client)
+      restore_app_env(:dynamic_tool_test_recipient, previous_recipient)
+    end)
+
+    Application.put_env(:symphony_elixir, :linear_client_module, ConfiguredLinearClient)
+    Application.put_env(:symphony_elixir, :dynamic_tool_test_recipient, self())
+
+    response =
+      DynamicTool.execute("linear_graphql", %{
+        "query" => "query Configured { viewer { id } }",
+        "variables" => %{"probe" => true}
+      })
+
+    assert_received {:configured_linear_client_called, "query Configured { viewer { id } }", %{"probe" => true}, []}
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"data" => %{"configured" => true}}
   end
 
   test "linear_graphql accepts a raw GraphQL query string" do
@@ -431,4 +496,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["success"] == true
     assert response["output"] == ":ok"
   end
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 end

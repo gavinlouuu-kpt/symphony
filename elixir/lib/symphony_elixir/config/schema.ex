@@ -9,6 +9,9 @@ defmodule SymphonyElixir.Config.Schema do
 
   @primary_key false
 
+  @linear_default_endpoint "https://api.linear.app/graphql"
+  @github_default_endpoint "https://api.github.com"
+
   @type t :: %__MODULE__{}
 
   defmodule StringOrMap do
@@ -212,6 +215,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:role_agents, {:array, :string}, default: [])
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -219,7 +223,13 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :max_concurrent_agents_by_state,
+          :role_agents
+        ],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
@@ -227,6 +237,8 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
+      |> update_change(:role_agents, &Schema.normalize_string_list/1)
+      |> validate_length(:role_agents, max: 12)
     end
   end
 
@@ -322,6 +334,71 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule OpenClaw do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:command, :string, default: "openclaw")
+      field(:channel, :string, default: "discord")
+      field(:account, :string)
+      field(:target, :string)
+      field(:timeout_ms, :integer, default: 10_000)
+      field(:intake_enabled, :boolean, default: false)
+      field(:intake_token, :string)
+      field(:intake_labels, {:array, :string}, default: [])
+
+      field(:events, {:array, :string},
+        default: [
+          "dispatch_started",
+          "role_agent_completed",
+          "agent_completed",
+          "issue_blocked",
+          "retry_scheduled"
+        ]
+      )
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :enabled,
+          :command,
+          :channel,
+          :account,
+          :target,
+          :timeout_ms,
+          :intake_enabled,
+          :intake_token,
+          :intake_labels,
+          :events
+        ],
+        empty_values: []
+      )
+      |> validate_number(:timeout_ms, greater_than: 0)
+      |> update_change(:intake_labels, &normalize_label_list/1)
+      |> update_change(:events, fn events ->
+        events
+        |> Enum.map(&(String.trim(&1) |> String.downcase()))
+        |> Enum.reject(&(&1 == ""))
+        |> Enum.uniq()
+      end)
+    end
+
+    defp normalize_label_list(labels) do
+      labels
+      |> Enum.map(&(String.trim(&1) |> String.downcase()))
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+    end
+  end
+
   defmodule Server do
     @moduledoc false
     use Ecto.Schema
@@ -351,6 +428,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:openclaw, OpenClaw, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
   end
 
@@ -414,6 +492,24 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   @doc false
+  @spec normalize_string_list(nil | [term()] | term()) :: [String.t()]
+  def normalize_string_list(nil), do: []
+
+  def normalize_string_list(values) when is_list(values) do
+    values
+    |> Enum.map(&(to_string(&1) |> String.trim()))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  def normalize_string_list(value) do
+    value
+    |> to_string()
+    |> String.split(",")
+    |> normalize_string_list()
+  end
+
+  @doc false
   @spec validate_state_limits(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
   def validate_state_limits(changeset, field) do
     validate_change(changeset, field, fn ^field, limits ->
@@ -444,13 +540,17 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
+    |> cast_embed(:openclaw, with: &OpenClaw.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
   end
 
   defp finalize_settings(settings) do
+    tracker_kind = settings.tracker.kind
+
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
+      | endpoint: resolve_tracker_endpoint(tracker_kind, settings.tracker.endpoint),
+        api_key: resolve_secret_setting(settings.tracker.api_key, tracker_api_key_fallback(tracker_kind)),
         assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
     }
 
@@ -473,8 +573,32 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, cua: cua, codex: codex}
+    openclaw = %{
+      settings.openclaw
+      | command: resolve_optional_env_setting(settings.openclaw.command),
+        channel: resolve_optional_env_setting(settings.openclaw.channel),
+        account: resolve_optional_env_setting(settings.openclaw.account),
+        target: resolve_optional_env_setting(settings.openclaw.target),
+        intake_token:
+          resolve_secret_setting(
+            settings.openclaw.intake_token,
+            System.get_env("SYMPHONY_OPENCLAW_INTAKE_TOKEN")
+          )
+    }
+
+    %{settings | tracker: tracker, workspace: workspace, cua: cua, codex: codex, openclaw: openclaw}
   end
+
+  defp resolve_tracker_endpoint("github", endpoint)
+       when endpoint in [nil, "", @linear_default_endpoint],
+       do: @github_default_endpoint
+
+  defp resolve_tracker_endpoint(_kind, endpoint), do: endpoint
+
+  defp tracker_api_key_fallback("github"),
+    do: System.get_env("GITHUB_TOKEN") || System.get_env("GH_TOKEN")
+
+  defp tracker_api_key_fallback(_kind), do: System.get_env("LINEAR_API_KEY")
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
@@ -511,6 +635,17 @@ defmodule SymphonyElixir.Config.Schema do
       resolved -> resolved
     end
   end
+
+  defp resolve_optional_env_setting(nil), do: nil
+
+  defp resolve_optional_env_setting(value) when is_binary(value) do
+    case resolve_env_value(value, nil) do
+      resolved when is_binary(resolved) -> normalize_blank_string(resolved)
+      _ -> nil
+    end
+  end
+
+  defp resolve_optional_env_setting(_value), do: nil
 
   defp resolve_path_value(value, default) when is_binary(value) do
     case normalize_path_token(value) do
@@ -580,6 +715,11 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp normalize_secret_value(_value), do: nil
+
+  defp normalize_blank_string(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
 
   defp default_turn_sandbox_policy(workspace) do
     %{

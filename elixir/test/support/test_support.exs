@@ -130,6 +130,7 @@ defmodule SymphonyElixir.TestSupport do
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
+          role_agents: [],
           codex_command: "codex app-server",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
@@ -145,6 +146,22 @@ defmodule SymphonyElixir.TestSupport do
           observability_enabled: true,
           observability_refresh_ms: 1_000,
           observability_render_interval_ms: 16,
+          openclaw_enabled: false,
+          openclaw_command: "openclaw",
+          openclaw_channel: "discord",
+          openclaw_account: nil,
+          openclaw_target: nil,
+          openclaw_timeout_ms: 10_000,
+          openclaw_intake_enabled: false,
+          openclaw_intake_token: nil,
+          openclaw_intake_labels: [],
+          openclaw_events: [
+            "dispatch_started",
+            "role_agent_completed",
+            "agent_completed",
+            "issue_blocked",
+            "retry_scheduled"
+          ],
           server_port: nil,
           server_host: nil,
           prompt: @workflow_prompt
@@ -190,6 +207,7 @@ defmodule SymphonyElixir.TestSupport do
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
+    role_agents = Keyword.get(config, :role_agents)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
@@ -205,6 +223,16 @@ defmodule SymphonyElixir.TestSupport do
     observability_enabled = Keyword.get(config, :observability_enabled)
     observability_refresh_ms = Keyword.get(config, :observability_refresh_ms)
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
+    openclaw_enabled = Keyword.get(config, :openclaw_enabled)
+    openclaw_command = Keyword.get(config, :openclaw_command)
+    openclaw_channel = Keyword.get(config, :openclaw_channel)
+    openclaw_account = Keyword.get(config, :openclaw_account)
+    openclaw_target = Keyword.get(config, :openclaw_target)
+    openclaw_timeout_ms = Keyword.get(config, :openclaw_timeout_ms)
+    openclaw_intake_enabled = Keyword.get(config, :openclaw_intake_enabled)
+    openclaw_intake_token = Keyword.get(config, :openclaw_intake_token)
+    openclaw_intake_labels = Keyword.get(config, :openclaw_intake_labels)
+    openclaw_events = Keyword.get(config, :openclaw_events)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
     prompt = Keyword.get(config, :prompt)
@@ -253,6 +281,7 @@ defmodule SymphonyElixir.TestSupport do
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
+        "  role_agents: #{yaml_value(role_agents)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",
@@ -263,6 +292,18 @@ defmodule SymphonyElixir.TestSupport do
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
+        openclaw_yaml(%{
+          enabled: openclaw_enabled,
+          command: openclaw_command,
+          channel: openclaw_channel,
+          account: openclaw_account,
+          target: openclaw_target,
+          timeout_ms: openclaw_timeout_ms,
+          intake_enabled: openclaw_intake_enabled,
+          intake_token: openclaw_intake_token,
+          intake_labels: openclaw_intake_labels,
+          events: openclaw_events
+        }),
         server_yaml(server_port, server_host),
         "---",
         prompt
@@ -407,6 +448,46 @@ defmodule SymphonyElixir.TestSupport do
       "  refresh_ms: #{yaml_value(refresh_ms)}",
       "  render_interval_ms: #{yaml_value(render_interval_ms)}"
     ]
+    |> Enum.join("\n")
+  end
+
+  defp openclaw_yaml(%{
+         enabled: false,
+         command: "openclaw",
+         channel: "discord",
+         account: nil,
+         target: nil,
+         timeout_ms: 10_000,
+         intake_enabled: false,
+         intake_token: nil,
+         intake_labels: intake_labels,
+         events: events
+       })
+       when intake_labels in [nil, []] and
+              events == [
+                "dispatch_started",
+                "role_agent_completed",
+                "agent_completed",
+                "issue_blocked",
+                "retry_scheduled"
+              ],
+       do: nil
+
+  defp openclaw_yaml(openclaw) do
+    [
+      "openclaw:",
+      "  enabled: #{yaml_value(openclaw.enabled)}",
+      "  command: #{yaml_value(openclaw.command)}",
+      "  channel: #{yaml_value(openclaw.channel)}",
+      openclaw.account && "  account: #{yaml_value(openclaw.account)}",
+      "  target: #{yaml_value(openclaw.target)}",
+      "  timeout_ms: #{yaml_value(openclaw.timeout_ms)}",
+      "  intake_enabled: #{yaml_value(openclaw.intake_enabled)}",
+      "  intake_token: #{yaml_value(openclaw.intake_token)}",
+      "  intake_labels: #{yaml_value(openclaw.intake_labels)}",
+      "  events: #{yaml_value(openclaw.events)}"
+    ]
+    |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
 

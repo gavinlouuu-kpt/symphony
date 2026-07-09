@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.Cua.Sandbox, as: CuaSandbox
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.OpenClaw.Notifier, as: OpenClawNotifier
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -205,6 +206,16 @@ defmodule SymphonyElixir.Orchestrator do
     else
       Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
+      OpenClawNotifier.publish(:agent_completed, %{
+        issue: running_entry.issue,
+        issue_id: issue_id,
+        identifier: running_entry.identifier,
+        session_id: session_id,
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path),
+        sandbox: Map.get(running_entry, :sandbox)
+      })
+
       state
       |> complete_issue(issue_id)
       |> schedule_issue_retry(issue_id, 1, %{
@@ -268,6 +279,34 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Linear project slug missing in WORKFLOW.md")
         state
 
+      {:error, :missing_github_api_token} ->
+        Logger.error("GitHub API token missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_github_repository} ->
+        Logger.error("GitHub repository missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_openclaw_command} ->
+        Logger.error("OpenClaw command missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_openclaw_channel} ->
+        Logger.error("OpenClaw channel missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_openclaw_target} ->
+        Logger.error("OpenClaw target missing in WORKFLOW.md")
+        state
+
+      {:error, :openclaw_intake_requires_github_tracker} ->
+        Logger.error("OpenClaw issue intake requires GitHub tracker mode in WORKFLOW.md")
+        state
+
+      {:error, :missing_openclaw_intake_token} ->
+        Logger.error("OpenClaw issue intake token missing in WORKFLOW.md")
+        state
+
       {:error, :missing_tracker_kind} ->
         Logger.error("Tracker kind missing in WORKFLOW.md")
 
@@ -295,7 +334,7 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+        Logger.error("Failed to fetch from tracker: #{inspect(reason)}")
         state
 
       false ->
@@ -765,6 +804,8 @@ defmodule SymphonyElixir.Orchestrator do
       last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
     }
 
+    OpenClawNotifier.publish(:issue_blocked, blocked_entry)
+
     %{
       state
       | running: Map.delete(state.running, issue_id),
@@ -956,6 +997,12 @@ defmodule SymphonyElixir.Orchestrator do
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
+        OpenClawNotifier.publish(:dispatch_started, %{
+          issue: issue,
+          attempt: attempt,
+          worker_host: worker_host
+        })
+
         running =
           Map.put(state.running, issue.id, %{
             pid: pid,
@@ -1054,6 +1101,18 @@ defmodule SymphonyElixir.Orchestrator do
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
 
     Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{next_attempt})#{error_suffix}")
+
+    OpenClawNotifier.publish(:retry_scheduled, %{
+      issue_id: issue_id,
+      identifier: identifier,
+      issue_url: issue_url,
+      attempt: next_attempt,
+      delay_ms: delay_ms,
+      error: error,
+      worker_host: worker_host,
+      workspace_path: workspace_path,
+      sandbox: sandbox
+    })
 
     %{
       state

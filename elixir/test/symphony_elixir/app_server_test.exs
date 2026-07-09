@@ -76,6 +76,89 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server waits for parent turn completion when a child agent turn completes first" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-child-turn-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-1000-CHILD")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-child-turn.trace")
+      test_pid = self()
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+
+      while IFS= read -r line; do
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$line" in
+          *'"method":"initialize"'*)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          *'"method":"thread/start"'*)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-parent"}}}'
+            ;;
+          *'"method":"turn/start"'*)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-parent"}}}'
+            printf '%s\\n' '{"method":"turn/completed","params":{"threadId":"thread-child","turn":{"id":"turn-child","status":"completed"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"threadId":"thread-parent","turnId":"turn-parent","item":{"type":"agentMessage","text":"PARENT_AFTER_CHILD_OK","phase":"final_answer"}}}'
+            printf '%s\\n' '{"method":"turn/completed","params":{"threadId":"thread-parent","turn":{"id":"turn-parent","status":"completed"}}}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-child-turn",
+        identifier: "MT-1000-CHILD",
+        title: "Ignore child turn completion",
+        description: "Ensure child turn completion does not end the parent session",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-1000-CHILD",
+        labels: ["backend"]
+      }
+
+      assert {:ok, %{result: :turn_completed, turn_id: "turn-parent"}} =
+               AppServer.run(workspace, "Wait for parent turn", issue, on_message: fn message -> send(test_pid, {:app_server_message, message}) end)
+
+      assert_received {:app_server_message,
+                       %{
+                         event: :notification,
+                         payload: %{"method" => "turn/completed", "params" => %{"turn" => %{"id" => "turn-child"}}}
+                       }}
+
+      assert_received {:app_server_message,
+                       %{
+                         event: :notification,
+                         payload: %{"params" => %{"item" => %{"text" => "PARENT_AFTER_CHILD_OK"}}}
+                       }}
+
+      assert_received {:app_server_message,
+                       %{
+                         event: :turn_completed,
+                         payload: %{"params" => %{"turn" => %{"id" => "turn-parent"}}}
+                       }}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server passes explicit turn sandbox policies through unchanged" do
     test_root =
       Path.join(
@@ -1367,6 +1450,7 @@ defmodule SymphonyElixir.AppServerTest do
         end)
 
       assert_received {:app_server_message, %{event: :turn_completed}}
+      assert_received {:app_server_message, %{event: :stream_output, payload: "warning: this is stderr noise", stream: "turn stream"}}
       refute_received {:app_server_message, %{event: :malformed}}
       assert log =~ "Codex turn stream output: warning: this is stderr noise"
     after

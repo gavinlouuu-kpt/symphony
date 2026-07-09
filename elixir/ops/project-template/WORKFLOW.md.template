@@ -1,22 +1,12 @@
 ---
 tracker:
-  kind: linear
-  endpoint: https://api.linear.app/graphql
-  api_key: "$LINEAR_API_KEY"
-  project_slug: "@SYMPHONY_LINEAR_PROJECT_SLUG@"
-  required_labels: []
-  active_states:
-    - Todo
-    - In Progress
-    - Rework
-    - Merging
-    - Human Review
-  terminal_states:
-    - Closed
-    - Cancelled
-    - Canceled
-    - Duplicate
-    - Done
+  kind: "@SYMPHONY_TRACKER_KIND@"
+  endpoint: "@SYMPHONY_TRACKER_ENDPOINT@"
+  api_key: "$@SYMPHONY_TRACKER_API_KEY_ENV@"
+  project_slug: "@SYMPHONY_TRACKER_PROJECT@"
+  required_labels: @SYMPHONY_TRACKER_REQUIRED_LABELS@
+  active_states: @SYMPHONY_TRACKER_ACTIVE_STATES@
+  terminal_states: @SYMPHONY_TRACKER_TERMINAL_STATES@
 polling:
   interval_ms: @SYMPHONY_POLL_INTERVAL_MS@
 workspace:
@@ -53,6 +43,10 @@ hooks:
 agent:
   max_concurrent_agents: @SYMPHONY_MAX_CONCURRENT_AGENTS@
   max_turns: @SYMPHONY_MAX_TURNS@
+  role_agents:
+    - planner
+    - generator
+    - evaluator
 codex:
   command: >
     @SYMPHONY_CODEX_COMMAND@
@@ -61,12 +55,23 @@ codex:
   turn_sandbox_policy: null
 observability:
   dashboard_enabled: true
+openclaw:
+  enabled: @SYMPHONY_OPENCLAW_ENABLED@
+  command: "@SYMPHONY_OPENCLAW_COMMAND@"
+  channel: "@SYMPHONY_OPENCLAW_CHANNEL@"
+  account: "@SYMPHONY_OPENCLAW_ACCOUNT@"
+  target: "@SYMPHONY_OPENCLAW_TARGET@"
+  timeout_ms: @SYMPHONY_OPENCLAW_TIMEOUT_MS@
+  intake_enabled: @SYMPHONY_OPENCLAW_INTAKE_ENABLED@
+  intake_token: "$@SYMPHONY_OPENCLAW_INTAKE_TOKEN_ENV@"
+  intake_labels: @SYMPHONY_OPENCLAW_INTAKE_LABELS@
+  events: @SYMPHONY_OPENCLAW_EVENTS@
 server:
   host: "@SYMPHONY_DASHBOARD_HOST@"
   port: @SYMPHONY_DASHBOARD_PORT@
 ---
 
-You are working on Linear issue `{{ issue.identifier }}` for the project handled by this Symphony instance.
+You are working on tracker issue `{{ issue.identifier }}` for the project handled by this Symphony instance.
 
 Symphony is running Codex on the host orchestrator. The issue workspace itself is a CUA sandbox.
 When you need to inspect, edit, run commands, or validate project code, use the sandbox tools:
@@ -75,7 +80,8 @@ When you need to inspect, edit, run commands, or validate project code, use the 
 - `sandbox_visible_exec` for commands, app starts, browser sessions, demos, or tests that must be visible through noVNC.
 - `sandbox_read_file` for reading files from the CUA workspace.
 - `sandbox_write_file` for writing files into the CUA workspace.
-- `linear_graphql` for Linear updates and issue context.
+- `linear_graphql` for Linear updates and issue context when this instance uses Linear.
+- For GitHub-backed workflows, use the `gh` CLI for issue/PR metadata and updates; keep project code commands inside the sandbox tools. Do not use approval-gated GitHub connector/MCP write tools in unattended workers.
 
 Do not use host-local shell commands or host-local file edits for project work unless explicitly instructed by Symphony.
 
@@ -96,7 +102,7 @@ No description provided.
 Operating rules:
 
 1. Work autonomously end to end inside the CUA sandbox.
-2. Keep a single Linear workpad comment current with plan, acceptance criteria, validation, and final status.
+2. Keep a single issue workpad/update comment current with plan, acceptance criteria, validation, and final status.
 3. Reproduce or inspect the issue before changing code when possible.
 4. Run focused validation before marking work complete.
 5. Build sanitized, production-scale local data under production-like settings when the task needs realistic product validation.
@@ -107,5 +113,41 @@ Operating rules:
 10. Rerun the full affected inventory and stop only at a clean pass or a blocked handoff.
 11. Use `sandbox_visible_exec` and the sandbox GUI/noVNC path for UI validation when the task is visual, interactive, demo-oriented, or real-user tested. Record transcript paths from `.symphony/visible-exec/` in the workpad.
 12. Ask before production access, sensitive data access, or destructive actions.
-13. If blocked by missing project auth, repo auth, secrets, hardware, or external services, document the exact blocker in the workpad and stop.
+13. If blocked by missing project auth, repo auth, secrets, hardware, missing `gh`, unauthenticated `gh`, or external services, document the exact blocker in the workpad, remove the active routing label when one is configured, and stop.
 14. Do not copy host credentials into the sandbox unless the project workflow explicitly requires it.
+
+Canonical GitHub/OpenClaw behavior:
+
+- For GitHub-backed instances, use `gh` for issue comments, PR comments, labels, PR creation, and other GitHub writes. Do not use approval-gated connector writes in unattended workers.
+- Use one persistent issue comment headed `## Codex Workpad` as the durable source of truth for plan, acceptance criteria, validation, phase evidence, PR/commit links, and blockers.
+- Treat the project bookkeeping label, usually `symphony`, separately from the active routing label, usually `openclaw-intake`. The active routing label means Symphony should keep working the issue.
+- Remove only the active routing label when the PR is ready for human review, blocked on external input, or complete. Leave the issue open for normal review handoff and close it only after the configured merge/completion expectations are satisfied.
+- Do not remove the active routing label, mark ready for review, or close the issue until the workpad has distinct Planner, Generator, and Evaluator evidence.
+- Discord/OpenClaw status belongs in one issue thread. `dispatch_started` creates or finds the thread; `role_agent_completed`, `agent_completed`, `issue_blocked`, and `retry_scheduled` post there. If the thread is missing or updates land in the parent channel, repair or backfill the thread and record the correction.
+
+Independent role-agent harness:
+
+This workflow is configured with `agent.role_agents`, so Symphony starts separate Planner,
+Generator, and Evaluator app-server sessions for each routed issue. A single agent writing three
+sections in one prompt does not satisfy the contract.
+
+1. Planner: inspect the issue, repo shape, current workpad/update comment, affected user-facing
+   inventory, acceptance criteria, risks, and validation plan. Persist the resulting sprint
+   contract in the issue workpad/update comment and, when useful, under
+   `.symphony/harness/{{ issue.identifier }}/plan.md`. Do not implement code.
+2. Generator: implement only the accepted Planner contract. Keep changes scoped, avoid reverting
+   unrelated work, and return changed paths plus validation evidence. Do not claim final review.
+3. Evaluator: inspect the actual diff, tests, workpad, PR/check state, docs, and guardrails with a
+   fresh independent session. Use `sandbox_visible_exec` for real-user/UI/demo validation. Running
+   `/review` does not satisfy this evaluator agent.
+4. If Generator or Evaluator leaves the issue active and routed, Symphony may run another
+   independent Planner -> Generator -> Evaluator cycle until the contract passes or a real external
+   blocker is proven.
+
+Codex subagent use inside a role session is allowed for bounded, independent work:
+
+- Planner may spawn read-only subagents for separable discovery surfaces on Medium/Large issues.
+- Generator may spawn subagents for investigation, validation triage, or test/log analysis, but Generator owns the implementation diff.
+- Evaluator may spawn focused review subagents for correctness, tests, docs, security, UI/runtime smoke, or operational risk.
+- Subagents must return summaries that the active role agent reconciles into its own `### Phase Evidence`.
+- Subagents must not edit project files, push branches, change tracker labels, close issues, or mark handoff complete unless the project workflow explicitly grants that authority.

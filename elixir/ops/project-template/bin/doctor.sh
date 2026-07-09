@@ -37,9 +37,37 @@ SYMPHONY_CUA_IMAGE_BUILD=${SYMPHONY_CUA_IMAGE_BUILD:-auto}
 SYMPHONY_CUA_SSH_KEYGEN=${SYMPHONY_CUA_SSH_KEYGEN:-auto}
 SYMPHONY_CUA_SSH_IDENTITY_FILE=${SYMPHONY_CUA_SSH_IDENTITY_FILE:-"$SYMPHONY_INSTANCE_ROOT/ssh/id_ed25519"}
 SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH=${SYMPHONY_CUA_SSH_AUTHORIZED_KEY_PATH:-"$SYMPHONY_CUA_SSH_IDENTITY_FILE.pub"}
+SYMPHONY_OPENCLAW_ENABLED=${SYMPHONY_OPENCLAW_ENABLED:-false}
+SYMPHONY_OPENCLAW_COMMAND=${SYMPHONY_OPENCLAW_COMMAND:-openclaw}
+SYMPHONY_OPENCLAW_CHANNEL=${SYMPHONY_OPENCLAW_CHANNEL:-discord}
+SYMPHONY_OPENCLAW_TARGET=${SYMPHONY_OPENCLAW_TARGET:-}
+SYMPHONY_OPENCLAW_INTAKE_ENABLED=${SYMPHONY_OPENCLAW_INTAKE_ENABLED:-false}
+SYMPHONY_OPENCLAW_INTAKE_TOKEN_ENV=${SYMPHONY_OPENCLAW_INTAKE_TOKEN_ENV:-SYMPHONY_OPENCLAW_INTAKE_TOKEN}
+SYMPHONY_OPENCLAW_INTAKE_URL=${SYMPHONY_OPENCLAW_INTAKE_URL:-"http://127.0.0.1:$SYMPHONY_DASHBOARD_PORT/api/v1/openclaw/issues"}
+SYMPHONY_TRACKER_KIND=${SYMPHONY_TRACKER_KIND:-linear}
+case "$SYMPHONY_TRACKER_KIND" in
+  github)
+    SYMPHONY_TRACKER_API_KEY_ENV=${SYMPHONY_TRACKER_API_KEY_ENV:-GITHUB_TOKEN}
+    SYMPHONY_TRACKER_PROJECT=${SYMPHONY_TRACKER_PROJECT:-${SYMPHONY_GITHUB_REPOSITORY:-}}
+    ;;
+  linear)
+    SYMPHONY_TRACKER_API_KEY_ENV=${SYMPHONY_TRACKER_API_KEY_ENV:-LINEAR_API_KEY}
+    SYMPHONY_TRACKER_PROJECT=${SYMPHONY_TRACKER_PROJECT:-${SYMPHONY_LINEAR_PROJECT_SLUG:-}}
+    ;;
+  *)
+    check_fail "invalid SYMPHONY_TRACKER_KIND=$SYMPHONY_TRACKER_KIND"
+    SYMPHONY_TRACKER_API_KEY_ENV=${SYMPHONY_TRACKER_API_KEY_ENV:-}
+    SYMPHONY_TRACKER_PROJECT=${SYMPHONY_TRACKER_PROJECT:-}
+    ;;
+esac
 
-[[ -n "${LINEAR_API_KEY:-}" ]] && check_ok "LINEAR_API_KEY is set" || check_fail "LINEAR_API_KEY is missing"
-[[ -n "${SYMPHONY_LINEAR_PROJECT_SLUG:-}" ]] && check_ok "SYMPHONY_LINEAR_PROJECT_SLUG is set" || check_fail "SYMPHONY_LINEAR_PROJECT_SLUG is missing"
+if [[ -n "$SYMPHONY_TRACKER_API_KEY_ENV" && -n "${!SYMPHONY_TRACKER_API_KEY_ENV:-}" ]]; then
+  check_ok "$SYMPHONY_TRACKER_API_KEY_ENV is set"
+else
+  check_fail "$SYMPHONY_TRACKER_API_KEY_ENV is missing"
+fi
+
+[[ -n "$SYMPHONY_TRACKER_PROJECT" ]] && check_ok "tracker project is set: $SYMPHONY_TRACKER_PROJECT" || check_fail "tracker project is missing"
 [[ -n "${SYMPHONY_SOURCE_REPO_URL:-}" ]] && check_ok "SYMPHONY_SOURCE_REPO_URL is set" || check_fail "SYMPHONY_SOURCE_REPO_URL is missing"
 
 [[ -d "$SYMPHONY_CODE_DIR/elixir" ]] && check_ok "Symphony checkout found" || check_fail "Symphony checkout missing at $SYMPHONY_CODE_DIR"
@@ -97,6 +125,52 @@ else
   check_fail "codex CLI not found on host"
 fi
 
+case "$SYMPHONY_OPENCLAW_ENABLED" in
+  true)
+    read -r -a OPENCLAW_CMD_PARTS <<< "$SYMPHONY_OPENCLAW_COMMAND"
+    OPENCLAW_EXECUTABLE=${OPENCLAW_CMD_PARTS[0]:-}
+
+    [[ -n "$SYMPHONY_OPENCLAW_CHANNEL" ]] && check_ok "OpenClaw channel is set: $SYMPHONY_OPENCLAW_CHANNEL" || check_fail "OpenClaw channel is missing"
+    [[ -n "$SYMPHONY_OPENCLAW_TARGET" ]] && check_ok "OpenClaw target is set: $SYMPHONY_OPENCLAW_TARGET" || check_fail "OpenClaw target is missing"
+
+    if [[ -n "$OPENCLAW_EXECUTABLE" ]] && command -v "$OPENCLAW_EXECUTABLE" >/dev/null 2>&1; then
+      check_ok "OpenClaw command found: $OPENCLAW_EXECUTABLE"
+    else
+      check_fail "OpenClaw command not found: $SYMPHONY_OPENCLAW_COMMAND"
+    fi
+    ;;
+  false)
+    check_warn "OpenClaw channel bridge disabled; set SYMPHONY_OPENCLAW_ENABLED=true to publish to Discord or another OpenClaw channel"
+    ;;
+  *)
+    check_fail "invalid SYMPHONY_OPENCLAW_ENABLED=$SYMPHONY_OPENCLAW_ENABLED"
+    ;;
+esac
+
+case "$SYMPHONY_OPENCLAW_INTAKE_ENABLED" in
+  true)
+    if [[ "$SYMPHONY_TRACKER_KIND" == "github" ]]; then
+      check_ok "OpenClaw issue intake is using GitHub tracker mode"
+    else
+      check_fail "OpenClaw issue intake requires SYMPHONY_TRACKER_KIND=github"
+    fi
+
+    if [[ -n "$SYMPHONY_OPENCLAW_INTAKE_TOKEN_ENV" && -n "${!SYMPHONY_OPENCLAW_INTAKE_TOKEN_ENV:-}" ]]; then
+      check_ok "$SYMPHONY_OPENCLAW_INTAKE_TOKEN_ENV is set"
+    else
+      check_fail "$SYMPHONY_OPENCLAW_INTAKE_TOKEN_ENV is missing"
+    fi
+
+    check_ok "OpenClaw issue intake URL: $SYMPHONY_OPENCLAW_INTAKE_URL"
+    ;;
+  false)
+    check_warn "OpenClaw issue intake disabled; set SYMPHONY_OPENCLAW_INTAKE_ENABLED=true to create GitHub issues from chat"
+    ;;
+  *)
+    check_fail "invalid SYMPHONY_OPENCLAW_INTAKE_ENABLED=$SYMPHONY_OPENCLAW_INTAKE_ENABLED"
+    ;;
+esac
+
 if command -v ss >/dev/null 2>&1; then
   if ss -ltn "( sport = :$SYMPHONY_DASHBOARD_PORT )" | tail -n +2 | grep -q .; then
     check_warn "dashboard port appears in use: $SYMPHONY_DASHBOARD_PORT"
@@ -107,19 +181,34 @@ else
   check_warn "ss not found; skipped dashboard port check"
 fi
 
-if [[ "${SYMPHONY_DOCTOR_ONLINE:-0}" == "1" && -n "${LINEAR_API_KEY:-}" ]]; then
-  if curl -fsS \
-    -H "Authorization: $LINEAR_API_KEY" \
-    -H "Content-Type: application/json" \
-    https://api.linear.app/graphql \
-    --data-binary '{"query":"query Viewer { viewer { id } }"}' \
-    | grep -q '"viewer"'; then
-    check_ok "Linear API reachable"
-  else
-    check_fail "Linear API check failed"
-  fi
+if [[ "${SYMPHONY_DOCTOR_ONLINE:-0}" == "1" && -n "$SYMPHONY_TRACKER_API_KEY_ENV" && -n "${!SYMPHONY_TRACKER_API_KEY_ENV:-}" ]]; then
+  case "$SYMPHONY_TRACKER_KIND" in
+    github)
+      if curl -fsS \
+        -H "Authorization: Bearer ${!SYMPHONY_TRACKER_API_KEY_ENV}" \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/$SYMPHONY_TRACKER_PROJECT" \
+        | grep -q '"full_name"'; then
+        check_ok "GitHub API reachable"
+      else
+        check_fail "GitHub API check failed"
+      fi
+      ;;
+    linear)
+      if curl -fsS \
+        -H "Authorization: ${!SYMPHONY_TRACKER_API_KEY_ENV}" \
+        -H "Content-Type: application/json" \
+        https://api.linear.app/graphql \
+        --data-binary '{"query":"query Viewer { viewer { id } }"}' \
+        | grep -q '"viewer"'; then
+        check_ok "Linear API reachable"
+      else
+        check_fail "Linear API check failed"
+      fi
+      ;;
+  esac
 else
-  check_warn "skipped Linear online check; set SYMPHONY_DOCTOR_ONLINE=1 to enable"
+  check_warn "skipped tracker online check; set SYMPHONY_DOCTOR_ONLINE=1 to enable"
 fi
 
 if [[ "$FAILED" == "0" ]]; then

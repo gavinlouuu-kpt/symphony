@@ -45,6 +45,18 @@ SYMPHONY_CUA_HOST=127.0.0.1
 SYMPHONY_CUA_NAME_PREFIX=symphony-biowork
 ```
 
+Linear is the default tracker. To use GitHub Issues instead, configure the tracker as:
+
+```bash
+SYMPHONY_TRACKER_KIND=github
+GITHUB_TOKEN=...
+SYMPHONY_TRACKER_PROJECT=gavinlouuu-kpt/template-agent-harness
+SYMPHONY_TRACKER_REQUIRED_LABELS='["symphony"]'
+SYMPHONY_TRACKER_ACTIVE_STATES='["open"]'
+SYMPHONY_TRACKER_TERMINAL_STATES='["closed"]'
+SYMPHONY_SOURCE_REPO_URL=https://github.com/gavinlouuu-kpt/symphony.git
+```
+
 Each project instance should have a unique:
 
 - `SYMPHONY_INSTANCE_ID`
@@ -155,6 +167,121 @@ For demo steps, real-user validation, browser/app startup, or any task where the
 activity in noVNC, the agent should use `sandbox_visible_exec`. It opens a terminal on the CUA desktop,
 runs the command from the issue workspace, records a transcript under `.symphony/visible-exec/`, waits
 for completion, and leaves the terminal open for review.
+
+## Agent Harness
+
+The project workflow is configured with `agent.role_agents`, so Symphony runs separate Planner,
+Generator, and Evaluator Codex app-server sessions for each routed issue. The agents share the same
+issue workspace and tracker workpad, but they do not share one chat context. Planner scopes the work,
+Generator implements the accepted plan, and Evaluator independently reviews the result before handoff.
+
+Within each role session, Codex subagents may be used for bounded independent work such as read-only
+discovery, test/log analysis, validation triage, or focused review. Keep code edits, tracker labels,
+PR handoff, and issue closure owned by the active role agent so the GitHub workpad remains the
+auditable source of truth.
+
+## OpenClaw Channel Bridge
+
+Symphony can publish orchestrator lifecycle updates through OpenClaw, which then handles Discord or
+any other configured OpenClaw channel. Symphony remains the scheduler/source of truth; OpenClaw is
+the operator communication bridge.
+
+Configure OpenClaw separately on the host:
+
+```bash
+openclaw onboard
+openclaw channels add --channel discord
+openclaw channels status --channel discord --probe
+```
+
+Then enable the bridge in `symphony.env`:
+
+```bash
+SYMPHONY_OPENCLAW_ENABLED=true
+SYMPHONY_OPENCLAW_CHANNEL=discord
+SYMPHONY_OPENCLAW_TARGET=channel:123456789012345678
+```
+
+The target format follows OpenClaw's `openclaw message send` CLI. For Discord, use
+`channel:<id>` for a guild channel or `user:<id>` for a DM target. Symphony publishes dispatch,
+role-agent completion, agent completion, blocked, and retry notifications. For Discord projects,
+the canonical behavior is one thread per issue: dispatch creates or finds the thread, and later
+role/status updates are posted in that thread.
+
+### OpenClaw Issue Intake
+
+The recommended shape is one pre-existing OpenClaw gateway per operator/trust boundary, with each
+Symphony project instance represented as a profile in that gateway. OpenClaw owns Discord and routes
+messages; each Symphony profile owns one GitHub-backed work queue.
+
+The workflow is:
+
+```text
+Discord message -> OpenClaw message:received hook -> Symphony profile intake URL
+  -> GitHub issue -> Symphony GitHub tracker poll -> implementation agent
+```
+
+Enable intake on a GitHub-backed Symphony instance:
+
+```bash
+SYMPHONY_TRACKER_KIND=github
+SYMPHONY_OPENCLAW_INTAKE_ENABLED=true
+SYMPHONY_OPENCLAW_INTAKE_TOKEN="$(openssl rand -hex 32)"
+SYMPHONY_OPENCLAW_INTAKE_URL=http://127.0.0.1:4401/api/v1/openclaw/issues
+SYMPHONY_OPENCLAW_INTAKE_LABELS='["openclaw-intake"]'
+```
+
+For GitHub-backed OpenClaw intake, keep the bookkeeping label and active routing label separate.
+`tracker.required_labels` should include the durable project label, commonly `symphony`, plus the
+active routing label when that project should pick up only OpenClaw-created work. `openclaw-intake`
+is the active routing label: remove it when a PR is ready for human review, the issue is blocked on
+external input, or the issue is complete. Leave the issue open for normal review handoff; close it
+only after the repository's merge/completion flow is done.
+
+Install the reusable OpenClaw hook into the shared OpenClaw gateway:
+
+```bash
+mkdir -p ~/.openclaw/hooks
+cp -R openclaw-hooks/symphony-issue-intake ~/.openclaw/hooks/
+openclaw hooks enable symphony-issue-intake
+```
+
+Configure the OpenClaw gateway environment with a profile route table:
+
+```json
+{
+  "default": "biowork",
+  "channels": {
+    "123456789012345678": "biowork",
+    "234567890123456789": "mib-studio"
+  },
+  "profiles": {
+    "biowork": {
+      "url": "http://127.0.0.1:4401/api/v1/openclaw/issues",
+      "tokenEnv": "SYMPHONY_OPENCLAW_INTAKE_TOKEN_BIOWORK",
+      "channel": "discord",
+      "target": "channel:123456789012345678",
+      "labels": ["openclaw-intake"]
+    },
+    "mib-studio": {
+      "url": "http://127.0.0.1:4402/api/v1/openclaw/issues",
+      "tokenEnv": "SYMPHONY_OPENCLAW_INTAKE_TOKEN_MIB",
+      "channel": "discord",
+      "target": "channel:234567890123456789",
+      "labels": ["openclaw-intake"]
+    }
+  }
+}
+```
+
+Set `SYMPHONY_OPENCLAW_PROFILES=/path/to/profiles.json` in the OpenClaw gateway environment, along
+with the referenced token env vars, then restart OpenClaw. In Discord, create work with:
+
+```text
+issue Add multi-prompt SAM2 annotation
+
+Users should be able to provide several positive/negative prompts before backend inference runs.
+```
 
 ## Dashboard
 
