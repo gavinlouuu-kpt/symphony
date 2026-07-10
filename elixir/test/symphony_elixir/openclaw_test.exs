@@ -370,7 +370,9 @@ defmodule SymphonyElixir.OpenClawTest do
       cycle: 2,
       max_cycles: 5,
       session_id: "session-role",
-      workspace_path: "/workspaces/GH-456"
+      workspace_path: "/workspaces/GH-456",
+      evidence_summary:
+        "Evidence: evaluator handoff evidence review (status 0)\nEvidence command: cat .symphony/artifacts/handoff-evidence.md\nEvidence artifacts: .symphony/artifacts/handoff-evidence.md exists\nEvidence recorded: 2026-07-10T04:00:00Z"
     })
 
     assert_receive {:openclaw_thread_reply, role_message, role_thread_ref, role_settings}
@@ -381,6 +383,8 @@ defmodule SymphonyElixir.OpenClawTest do
     assert role_message =~ "Role: evaluator"
     assert role_message =~ "Cycle: 2/5"
     assert role_message =~ "Session: session-role"
+    assert role_message =~ "Evidence: evaluator handoff evidence review (status 0)"
+    assert role_message =~ "Evidence artifacts: .symphony/artifacts/handoff-evidence.md exists"
 
     OpenClawNotifier.publish(:agent_completed, %{
       issue: issue,

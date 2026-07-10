@@ -7,7 +7,7 @@ defmodule SymphonyElixir.AgentRunner do
   alias SymphonyElixir.Codex.AppServer
   alias SymphonyElixir.Cua.Sandbox
   alias SymphonyElixir.OpenClaw.Notifier, as: OpenClawNotifier
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, SSH, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
   @max_supervision_retries 2
@@ -360,7 +360,8 @@ defmodule SymphonyElixir.AgentRunner do
           cycle_number,
           max_cycles,
           supervision_context(codex_context, workspace),
-          0
+          0,
+          codex_context
         )
       after
         AppServer.stop_session(session)
@@ -378,7 +379,8 @@ defmodule SymphonyElixir.AgentRunner do
          cycle_number,
          max_cycles,
          supervision_context,
-         supervision_attempt
+         supervision_attempt,
+         codex_context
        ) do
     with {:ok, turn_session, supervision_signals} <-
            run_supervised_turn(session, prompt, issue, codex_update_recipient, supervision_context) do
@@ -398,20 +400,21 @@ defmodule SymphonyElixir.AgentRunner do
             cycle_number,
             max_cycles,
             supervision_context,
-            supervision_attempt + 1
+            supervision_attempt + 1,
+            codex_context
           )
 
         supervision_signals != [] ->
           {:error, {:cua_supervision_unresolved, summarize_supervision_signals(supervision_signals)}}
 
         true ->
-          publish_role_agent_completed(issue, role, cycle_number, max_cycles, turn_session, workspace)
+          publish_role_agent_completed(issue, role, cycle_number, max_cycles, turn_session, workspace, codex_context)
           :ok
       end
     end
   end
 
-  defp publish_role_agent_completed(issue, role, cycle_number, max_cycles, turn_session, workspace) do
+  defp publish_role_agent_completed(issue, role, cycle_number, max_cycles, turn_session, workspace, codex_context) do
     OpenClawNotifier.publish(:role_agent_completed, %{
       issue: issue,
       issue_id: issue.id,
@@ -420,8 +423,126 @@ defmodule SymphonyElixir.AgentRunner do
       cycle: cycle_number,
       max_cycles: max_cycles,
       session_id: turn_session[:session_id],
-      workspace_path: workspace
+      workspace_path: workspace,
+      evidence_summary: evidence_summary(codex_context, workspace)
     })
+  end
+
+  defp evidence_summary(codex_context, workspace) do
+    with {:ok, contents} <- read_evidence_ledger(codex_context, workspace),
+         [_ | _] = entries <- parse_evidence_entries(contents),
+         %{} = entry <- List.last(entries) do
+      format_evidence_summary(entry)
+    else
+      _ -> nil
+    end
+  end
+
+  defp read_evidence_ledger(codex_context, workspace) do
+    case sandbox_context(codex_context) do
+      %{worker_host: worker_host, workspace: sandbox_workspace}
+      when is_binary(worker_host) and is_binary(sandbox_workspace) ->
+        read_remote_evidence_ledger(worker_host, sandbox_workspace)
+
+      _ ->
+        case worker_host(codex_context) do
+          worker_host when is_binary(worker_host) and worker_host != "" ->
+            read_remote_evidence_ledger(worker_host, workspace)
+
+          _ ->
+            File.read(Path.join([workspace, ".symphony", "evidence-ledger.jsonl"]))
+        end
+    end
+  end
+
+  defp sandbox_context(%{start_opts: start_opts}) when is_list(start_opts) do
+    dynamic_tool_context = Keyword.get(start_opts, :dynamic_tool_context, %{}) || %{}
+    normalize_sandbox_context(Map.get(dynamic_tool_context, :sandbox) || Map.get(dynamic_tool_context, "sandbox"))
+  end
+
+  defp sandbox_context(_codex_context), do: nil
+
+  defp normalize_sandbox_context(%{worker_host: worker_host, workspace: workspace}) do
+    %{worker_host: worker_host, workspace: workspace}
+  end
+
+  defp normalize_sandbox_context(%{"worker_host" => worker_host, "workspace" => workspace}) do
+    %{worker_host: worker_host, workspace: workspace}
+  end
+
+  defp normalize_sandbox_context(_sandbox_context), do: nil
+
+  defp worker_host(%{start_opts: start_opts}) when is_list(start_opts), do: Keyword.get(start_opts, :worker_host)
+  defp worker_host(_codex_context), do: nil
+
+  defp read_remote_evidence_ledger(worker_host, workspace) do
+    command = "cd #{shell_escape(workspace)} && cat .symphony/evidence-ledger.jsonl 2>/dev/null"
+
+    case SSH.run(worker_host, command, stderr_to_stdout: true) do
+      {:ok, {contents, 0}} -> {:ok, contents}
+      {:ok, {_contents, _status}} -> {:error, :evidence_ledger_unavailable}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp parse_evidence_entries(contents) when is_binary(contents) do
+    contents
+    |> String.split("\n", trim: true)
+    |> Enum.flat_map(fn line ->
+      case Jason.decode(line) do
+        {:ok, %{} = entry} -> [entry]
+        _ -> []
+      end
+    end)
+  end
+
+  defp format_evidence_summary(entry) do
+    [
+      "Evidence: #{Map.get(entry, "check") || "recorded"} (status #{Map.get(entry, "status")})",
+      "Evidence command: #{truncate_inline(Map.get(entry, "command"), 180)}",
+      evidence_artifacts_line(Map.get(entry, "artifacts", [])),
+      "Evidence recorded: #{Map.get(entry, "recorded_at")}"
+    ]
+    |> Enum.reject(&blank_line?/1)
+    |> Enum.join("\n")
+  end
+
+  defp evidence_artifacts_line(artifacts) when is_list(artifacts) do
+    artifacts =
+      artifacts
+      |> Enum.map(&format_evidence_artifact/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join(", ")
+
+    if artifacts == "", do: nil, else: "Evidence artifacts: #{truncate_inline(artifacts, 220)}"
+  end
+
+  defp evidence_artifacts_line(_artifacts), do: nil
+
+  defp format_evidence_artifact(%{"path" => path, "exists" => exists}) when is_binary(path) do
+    "#{path} #{if exists, do: "exists", else: "missing"}"
+  end
+
+  defp format_evidence_artifact(_artifact), do: ""
+
+  defp truncate_inline(nil, _max), do: nil
+
+  defp truncate_inline(value, max) when is_integer(max) and max > 3 do
+    value
+    |> to_string()
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> then(fn text ->
+      if String.length(text) <= max, do: text, else: String.slice(text, 0, max - 3) <> "..."
+    end)
+  end
+
+  defp blank_line?(nil), do: true
+  defp blank_line?(""), do: true
+  defp blank_line?(_line), do: false
+
+  defp shell_escape(value) when is_binary(value) do
+    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns) do

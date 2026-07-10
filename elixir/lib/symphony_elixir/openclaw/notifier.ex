@@ -420,7 +420,8 @@ defmodule SymphonyElixir.OpenClaw.Notifier do
         field_line("Role", Map.get(payload, :role)),
         field_line("Cycle", cycle_label(Map.get(payload, :cycle), Map.get(payload, :max_cycles))),
         field_line("Session", Map.get(payload, :session_id)),
-        field_line("Workspace", Map.get(payload, :workspace_path))
+        field_line("Workspace", Map.get(payload, :workspace_path)),
+        evidence_summary_line(payload)
       ]
       |> compact_lines()
 
@@ -496,6 +497,10 @@ defmodule SymphonyElixir.OpenClaw.Notifier do
   end
 
   defp sandbox_value(_sandbox, _key), do: nil
+
+  defp evidence_summary_line(payload) do
+    Map.get(payload, :evidence_summary) || Map.get(payload, "evidence_summary")
+  end
 
   defp compact_lines(lines) do
     lines
