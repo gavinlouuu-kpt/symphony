@@ -21,7 +21,8 @@ defmodule SymphonyElixir.Workspace do
       with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
            {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
-           :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
+           :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host),
+           :ok <- maybe_run_sandbox_contract_check(workspace, issue_context, worker_host) do
         {:ok, workspace}
       end
     rescue
@@ -222,6 +223,22 @@ defmodule SymphonyElixir.Workspace do
 
       false ->
         :ok
+    end
+  end
+
+  defp maybe_run_sandbox_contract_check(workspace, issue_context, worker_host) do
+    contract = Config.settings!().sandbox_contract
+    bootstrap_check = contract.bootstrap_check
+
+    cond do
+      contract.enforced != true ->
+        :ok
+
+      not is_binary(bootstrap_check) or String.trim(bootstrap_check) == "" ->
+        {:error, :sandbox_contract_bootstrap_check_missing}
+
+      true ->
+        run_hook(bootstrap_check, workspace, issue_context, "sandbox_contract", worker_host)
     end
   end
 

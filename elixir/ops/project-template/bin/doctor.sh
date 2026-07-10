@@ -19,6 +19,13 @@ check_warn() {
   printf '[warn] %s\n' "$1" >&2
 }
 
+has_config_value() {
+  local value=${1:-}
+  local compact
+  compact=$(printf '%s' "$value" | tr -d '[:space:]')
+  [[ -n "$compact" && "$compact" != "[]" && "$compact" != "''" && "$compact" != '""' ]]
+}
+
 if [[ ! -f "$ENV_FILE" ]]; then
   check_fail "missing env file: $ENV_FILE"
 else
@@ -44,6 +51,14 @@ SYMPHONY_OPENCLAW_TARGET=${SYMPHONY_OPENCLAW_TARGET:-}
 SYMPHONY_OPENCLAW_INTAKE_ENABLED=${SYMPHONY_OPENCLAW_INTAKE_ENABLED:-false}
 SYMPHONY_OPENCLAW_INTAKE_TOKEN_ENV=${SYMPHONY_OPENCLAW_INTAKE_TOKEN_ENV:-SYMPHONY_OPENCLAW_INTAKE_TOKEN}
 SYMPHONY_OPENCLAW_INTAKE_URL=${SYMPHONY_OPENCLAW_INTAKE_URL:-"http://127.0.0.1:$SYMPHONY_DASHBOARD_PORT/api/v1/openclaw/issues"}
+SYMPHONY_AFTER_CREATE_EXTRA=${SYMPHONY_AFTER_CREATE_EXTRA:-}
+SYMPHONY_SANDBOX_CONTRACT_ENFORCED=${SYMPHONY_SANDBOX_CONTRACT_ENFORCED:-true}
+SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED=${SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED:-false}
+SYMPHONY_SANDBOX_REQUIRED_COMMANDS=${SYMPHONY_SANDBOX_REQUIRED_COMMANDS:-[]}
+SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES=${SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES:-[]}
+SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES=${SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES:-[]}
+SYMPHONY_SANDBOX_BOOTSTRAP_CHECK=${SYMPHONY_SANDBOX_BOOTSTRAP_CHECK:-}
+SYMPHONY_SANDBOX_REQUIREMENTS_NOTES=${SYMPHONY_SANDBOX_REQUIREMENTS_NOTES:-}
 SYMPHONY_TRACKER_KIND=${SYMPHONY_TRACKER_KIND:-linear}
 case "$SYMPHONY_TRACKER_KIND" in
   github)
@@ -69,6 +84,67 @@ fi
 
 [[ -n "$SYMPHONY_TRACKER_PROJECT" ]] && check_ok "tracker project is set: $SYMPHONY_TRACKER_PROJECT" || check_fail "tracker project is missing"
 [[ -n "${SYMPHONY_SOURCE_REPO_URL:-}" ]] && check_ok "SYMPHONY_SOURCE_REPO_URL is set" || check_fail "SYMPHONY_SOURCE_REPO_URL is missing"
+
+case "$SYMPHONY_SANDBOX_CONTRACT_ENFORCED" in
+  true)
+    check_ok "sandbox contract enforcement enabled"
+
+    case "$SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED" in
+      true)
+        check_ok "sandbox requirements audit marked complete"
+        ;;
+      false)
+        check_fail "sandbox requirements audit is not complete; review repo docs/CI and set SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED=true"
+        ;;
+      *)
+        check_fail "invalid SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED=$SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED"
+        ;;
+    esac
+
+    if has_config_value "$SYMPHONY_SANDBOX_REQUIRED_COMMANDS"; then
+      check_ok "sandbox required command list declared"
+    else
+      check_warn "SYMPHONY_SANDBOX_REQUIRED_COMMANDS is empty"
+    fi
+
+    if has_config_value "$SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES"; then
+      check_ok "sandbox required Python module list declared"
+    else
+      check_warn "SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES is empty"
+    fi
+
+    if has_config_value "$SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES"; then
+      check_ok "sandbox required system package list declared"
+    else
+      check_warn "SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES is empty"
+    fi
+
+    if has_config_value "$SYMPHONY_AFTER_CREATE_EXTRA"; then
+      check_ok "sandbox bootstrap command declared"
+    else
+      check_warn "SYMPHONY_AFTER_CREATE_EXTRA is empty; base image must already contain routine dependencies"
+    fi
+
+    if has_config_value "$SYMPHONY_SANDBOX_BOOTSTRAP_CHECK"; then
+      check_ok "sandbox bootstrap smoke check declared"
+    else
+      check_fail "SYMPHONY_SANDBOX_BOOTSTRAP_CHECK is required when sandbox contract enforcement is enabled"
+    fi
+
+    if ! has_config_value "$SYMPHONY_SANDBOX_REQUIRED_COMMANDS" \
+      && ! has_config_value "$SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES" \
+      && ! has_config_value "$SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES" \
+      && ! has_config_value "$SYMPHONY_SANDBOX_REQUIREMENTS_NOTES"; then
+      check_fail "declare at least one sandbox requirement or note after audit"
+    fi
+    ;;
+  false)
+    check_warn "sandbox contract enforcement disabled; issue workspaces may miss project validation dependencies"
+    ;;
+  *)
+    check_fail "invalid SYMPHONY_SANDBOX_CONTRACT_ENFORCED=$SYMPHONY_SANDBOX_CONTRACT_ENFORCED"
+    ;;
+esac
 
 [[ -d "$SYMPHONY_CODE_DIR/elixir" ]] && check_ok "Symphony checkout found" || check_fail "Symphony checkout missing at $SYMPHONY_CODE_DIR"
 [[ -f "$SYMPHONY_INSTANCE_ROOT/WORKFLOW.md.template" ]] && check_ok "workflow template found" || check_fail "workflow template missing"

@@ -313,6 +313,119 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule SandboxContract do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enforced, :boolean, default: false)
+      field(:audited, :boolean, default: false)
+      field(:required_commands, {:array, :string}, default: [])
+      field(:required_python_modules, {:array, :string}, default: [])
+      field(:required_system_packages, {:array, :string}, default: [])
+      field(:bootstrap_check, :string)
+      field(:notes, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :enforced,
+          :audited,
+          :required_commands,
+          :required_python_modules,
+          :required_system_packages,
+          :bootstrap_check,
+          :notes
+        ],
+        empty_values: []
+      )
+      |> update_change(:required_commands, &normalize_string_list/1)
+      |> update_change(:required_python_modules, &normalize_string_list/1)
+      |> update_change(:required_system_packages, &normalize_string_list/1)
+      |> validate_enforced_contract()
+    end
+
+    defp normalize_string_list(values) when is_list(values) do
+      values
+      |> Enum.map(&(to_string(&1) |> String.trim()))
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+    end
+
+    defp normalize_string_list(value) when is_binary(value) do
+      value
+      |> String.split(",")
+      |> normalize_string_list()
+    end
+
+    defp normalize_string_list(_value), do: []
+
+    defp validate_enforced_contract(changeset) do
+      case get_field(changeset, :enforced) do
+        true ->
+          changeset
+          |> require_audited()
+          |> validate_required([:bootstrap_check])
+          |> validate_non_empty_bootstrap_check()
+          |> require_any_requirement()
+
+        _ ->
+          changeset
+      end
+    end
+
+    defp require_audited(changeset) do
+      case get_field(changeset, :audited) do
+        true -> changeset
+        _ -> add_error(changeset, :audited, "must be true when sandbox contract is enforced")
+      end
+    end
+
+    defp validate_non_empty_bootstrap_check(changeset) do
+      validate_change(changeset, :bootstrap_check, fn :bootstrap_check, value ->
+        if is_binary(value) and String.trim(value) == "" do
+          [bootstrap_check: "can't be blank"]
+        else
+          []
+        end
+      end)
+    end
+
+    defp require_any_requirement(changeset) do
+      has_requirement? =
+        Enum.any?(
+          [
+            get_field(changeset, :required_commands, []),
+            get_field(changeset, :required_python_modules, []),
+            get_field(changeset, :required_system_packages, [])
+          ],
+          &(&1 != [])
+        ) ||
+          present?(get_field(changeset, :notes))
+
+      case has_requirement? do
+        true ->
+          changeset
+
+        false ->
+          add_error(
+            changeset,
+            :required_commands,
+            "must declare at least one sandbox requirement or note when contract is enforced"
+          )
+      end
+    end
+
+    defp present?(value) when is_binary(value), do: String.trim(value) != ""
+    defp present?(_value), do: false
+  end
+
   defmodule Observability do
     @moduledoc false
     use Ecto.Schema
@@ -427,6 +540,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:sandbox_contract, SandboxContract, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:openclaw, OpenClaw, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -539,6 +653,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
+    |> cast_embed(:sandbox_contract, with: &SandboxContract.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:openclaw, with: &OpenClaw.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)

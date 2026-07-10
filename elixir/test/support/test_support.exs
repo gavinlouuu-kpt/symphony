@@ -143,6 +143,13 @@ defmodule SymphonyElixir.TestSupport do
           hook_after_run: nil,
           hook_before_remove: nil,
           hook_timeout_ms: 60_000,
+          sandbox_contract_enforced: false,
+          sandbox_contract_audited: false,
+          sandbox_contract_required_commands: [],
+          sandbox_contract_required_python_modules: [],
+          sandbox_contract_required_system_packages: [],
+          sandbox_contract_bootstrap_check: nil,
+          sandbox_contract_notes: nil,
           observability_enabled: true,
           observability_refresh_ms: 1_000,
           observability_render_interval_ms: 16,
@@ -220,6 +227,13 @@ defmodule SymphonyElixir.TestSupport do
     hook_after_run = Keyword.get(config, :hook_after_run)
     hook_before_remove = Keyword.get(config, :hook_before_remove)
     hook_timeout_ms = Keyword.get(config, :hook_timeout_ms)
+    sandbox_contract_enforced = Keyword.get(config, :sandbox_contract_enforced)
+    sandbox_contract_audited = Keyword.get(config, :sandbox_contract_audited)
+    sandbox_contract_required_commands = Keyword.get(config, :sandbox_contract_required_commands)
+    sandbox_contract_required_python_modules = Keyword.get(config, :sandbox_contract_required_python_modules)
+    sandbox_contract_required_system_packages = Keyword.get(config, :sandbox_contract_required_system_packages)
+    sandbox_contract_bootstrap_check = Keyword.get(config, :sandbox_contract_bootstrap_check)
+    sandbox_contract_notes = Keyword.get(config, :sandbox_contract_notes)
     observability_enabled = Keyword.get(config, :observability_enabled)
     observability_refresh_ms = Keyword.get(config, :observability_refresh_ms)
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
@@ -291,6 +305,15 @@ defmodule SymphonyElixir.TestSupport do
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
+        sandbox_contract_yaml(%{
+          enforced: sandbox_contract_enforced,
+          audited: sandbox_contract_audited,
+          required_commands: sandbox_contract_required_commands,
+          required_python_modules: sandbox_contract_required_python_modules,
+          required_system_packages: sandbox_contract_required_system_packages,
+          bootstrap_check: sandbox_contract_bootstrap_check,
+          notes: sandbox_contract_notes
+        }),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         openclaw_yaml(%{
           enabled: openclaw_enabled,
@@ -345,6 +368,21 @@ defmodule SymphonyElixir.TestSupport do
       hook_entry("before_run", hook_before_run),
       hook_entry("after_run", hook_after_run),
       hook_entry("before_remove", hook_before_remove)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp sandbox_contract_yaml(contract) do
+    [
+      "sandbox_contract:",
+      "  enforced: #{yaml_value(contract.enforced)}",
+      "  audited: #{yaml_value(contract.audited)}",
+      "  required_commands: #{yaml_value(contract.required_commands)}",
+      "  required_python_modules: #{yaml_value(contract.required_python_modules)}",
+      "  required_system_packages: #{yaml_value(contract.required_system_packages)}",
+      block_entry("bootstrap_check", contract.bootstrap_check),
+      block_entry("notes", contract.notes)
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
@@ -506,6 +544,12 @@ defmodule SymphonyElixir.TestSupport do
   defp hook_entry(_name, nil), do: nil
 
   defp hook_entry(name, command) when is_binary(command) do
+    block_entry(name, command)
+  end
+
+  defp block_entry(_name, nil), do: nil
+
+  defp block_entry(name, command) when is_binary(command) do
     indented =
       command
       |> String.split("\n")

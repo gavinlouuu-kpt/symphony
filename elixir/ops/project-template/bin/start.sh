@@ -64,6 +64,13 @@ case "$SYMPHONY_TRACKER_KIND" in
 esac
 SYMPHONY_SOURCE_REPO_BRANCH=${SYMPHONY_SOURCE_REPO_BRANCH:-main}
 SYMPHONY_AFTER_CREATE_EXTRA=${SYMPHONY_AFTER_CREATE_EXTRA:-}
+SYMPHONY_SANDBOX_CONTRACT_ENFORCED=${SYMPHONY_SANDBOX_CONTRACT_ENFORCED:-true}
+SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED=${SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED:-false}
+SYMPHONY_SANDBOX_REQUIRED_COMMANDS=${SYMPHONY_SANDBOX_REQUIRED_COMMANDS:-[]}
+SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES=${SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES:-[]}
+SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES=${SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES:-[]}
+SYMPHONY_SANDBOX_BOOTSTRAP_CHECK=${SYMPHONY_SANDBOX_BOOTSTRAP_CHECK:-}
+SYMPHONY_SANDBOX_REQUIREMENTS_NOTES=${SYMPHONY_SANDBOX_REQUIREMENTS_NOTES:-}
 SYMPHONY_CUA_HOST=${SYMPHONY_CUA_HOST:-127.0.0.1}
 SYMPHONY_CUA_IMAGE=${SYMPHONY_CUA_IMAGE:-symphony-cua-worker:latest}
 SYMPHONY_CUA_IMAGE_BUILD=${SYMPHONY_CUA_IMAGE_BUILD:-auto}
@@ -82,6 +89,54 @@ required_env() {
   local name=$1
   if [[ -z "${!name:-}" ]]; then
     echo "$name is required in $ENV_FILE" >&2
+    exit 1
+  fi
+}
+
+has_config_value() {
+  local value=${1:-}
+  local compact
+  compact=$(printf '%s' "$value" | tr -d '[:space:]')
+  [[ -n "$compact" && "$compact" != "[]" && "$compact" != "''" && "$compact" != '""' ]]
+}
+
+validate_sandbox_requirements() {
+  case "$SYMPHONY_SANDBOX_CONTRACT_ENFORCED" in
+    true)
+      ;;
+    false)
+      return 0
+      ;;
+    *)
+      echo "Invalid SYMPHONY_SANDBOX_CONTRACT_ENFORCED=$SYMPHONY_SANDBOX_CONTRACT_ENFORCED. Use true or false." >&2
+      exit 1
+      ;;
+  esac
+
+  case "$SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED" in
+    true)
+      ;;
+    false)
+      echo "SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED must be true before starting a project instance." >&2
+      echo "Review repo docs/CI/package manifests, declare sandbox requirements, and set SYMPHONY_SANDBOX_BOOTSTRAP_CHECK." >&2
+      exit 1
+      ;;
+    *)
+      echo "Invalid SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED=$SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED. Use true or false." >&2
+      exit 1
+      ;;
+  esac
+
+  if ! has_config_value "$SYMPHONY_SANDBOX_BOOTSTRAP_CHECK"; then
+    echo "SYMPHONY_SANDBOX_BOOTSTRAP_CHECK is required when sandbox contract enforcement is enabled." >&2
+    exit 1
+  fi
+
+  if ! has_config_value "$SYMPHONY_SANDBOX_REQUIRED_COMMANDS" \
+    && ! has_config_value "$SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES" \
+    && ! has_config_value "$SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES" \
+    && ! has_config_value "$SYMPHONY_SANDBOX_REQUIREMENTS_NOTES"; then
+    echo "Declare at least one sandbox requirement or note before starting a project instance." >&2
     exit 1
   fi
 }
@@ -124,6 +179,13 @@ render_workflow() {
   replace_token SYMPHONY_SOURCE_REPO_BRANCH "$SYMPHONY_SOURCE_REPO_BRANCH"
   replace_token SYMPHONY_SOURCE_REPO_URL "$SYMPHONY_SOURCE_REPO_URL"
   replace_token SYMPHONY_AFTER_CREATE_EXTRA "$SYMPHONY_AFTER_CREATE_EXTRA"
+  replace_token SYMPHONY_SANDBOX_CONTRACT_ENFORCED "$SYMPHONY_SANDBOX_CONTRACT_ENFORCED"
+  replace_token SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED "$SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED"
+  replace_token SYMPHONY_SANDBOX_REQUIRED_COMMANDS "$SYMPHONY_SANDBOX_REQUIRED_COMMANDS"
+  replace_token SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES "$SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES"
+  replace_token SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES "$SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES"
+  replace_token SYMPHONY_SANDBOX_BOOTSTRAP_CHECK "$SYMPHONY_SANDBOX_BOOTSTRAP_CHECK"
+  replace_token SYMPHONY_SANDBOX_REQUIREMENTS_NOTES "$SYMPHONY_SANDBOX_REQUIREMENTS_NOTES"
   replace_token SYMPHONY_MAX_CONCURRENT_AGENTS "$SYMPHONY_MAX_CONCURRENT_AGENTS"
   replace_token SYMPHONY_MAX_TURNS "$SYMPHONY_MAX_TURNS"
   replace_token SYMPHONY_OPENCLAW_ENABLED "$SYMPHONY_OPENCLAW_ENABLED"
@@ -195,6 +257,7 @@ if [[ -z "$SYMPHONY_TRACKER_PROJECT" ]]; then
   exit 1
 fi
 required_env SYMPHONY_SOURCE_REPO_URL
+validate_sandbox_requirements
 
 case "$SYMPHONY_OPENCLAW_ENABLED" in
   true|false)

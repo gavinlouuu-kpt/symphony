@@ -1,6 +1,7 @@
 # Symphony CUA Project Template
 
 This directory is a reusable deployment template for running one Symphony instance per project.
+For the guardrail ownership model, see `../PROGRAMMATIC_GUARDS.md`.
 
 The intended runtime shape is:
 
@@ -86,6 +87,35 @@ Start in the foreground:
 ```bash
 bin/start.sh
 ```
+
+## Sandbox Requirements Audit
+
+Every project instance must define its sandbox contract before it is allowed to
+run. During setup, review the repository's `AGENTS.md`, README, build docs, CI
+workflows, package manifests, GUI/runtime docs, and test docs. Convert that
+review into explicit `symphony.env` settings:
+
+```bash
+SYMPHONY_SANDBOX_CONTRACT_ENFORCED=true
+SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED=true
+SYMPHONY_SANDBOX_REQUIRED_COMMANDS='["git","python3","cmake"]'
+SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES='["PySide6","h5py","cv2"]'
+SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES='["qt6-base-dev","libopencv-dev"]'
+SYMPHONY_AFTER_CREATE_EXTRA="python3 -m venv .symphony/venv && . .symphony/venv/bin/activate && pip install -r requirements-dev.txt"
+SYMPHONY_SANDBOX_BOOTSTRAP_CHECK="command -v cmake >/dev/null && python3 -c 'import PySide6, h5py, cv2'"
+SYMPHONY_SANDBOX_REQUIREMENTS_NOTES="GUI smoke uses noVNC; hardware-only checks need documented substitutes."
+```
+
+`bin/doctor.sh` and `bin/start.sh` fail until the audit is marked complete and
+a bootstrap smoke check is declared. Symphony validates the typed
+`sandbox_contract` at config load and runs its smoke check after cloning and
+`SYMPHONY_AFTER_CREATE_EXTRA`, so an underbuilt sandbox is caught before the
+issue agent starts planning or implementation.
+
+Keep the audit conservative and repo-specific. If CI proves a command, package,
+or smoke path is expected for normal local development, make it part of the
+sandbox contract. Do not leave installable local dependencies such as `cmake`,
+Qt/PySide, OpenCV, HDF5 bindings, or test runners as per-issue blockers.
 
 ## Run With systemd User Services
 

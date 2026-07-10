@@ -40,6 +40,16 @@ hooks:
     if [ -n "@SYMPHONY_AFTER_CREATE_EXTRA@" ]; then
       @SYMPHONY_AFTER_CREATE_EXTRA@
     fi
+sandbox_contract:
+  enforced: @SYMPHONY_SANDBOX_CONTRACT_ENFORCED@
+  audited: @SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED@
+  required_commands: @SYMPHONY_SANDBOX_REQUIRED_COMMANDS@
+  required_python_modules: @SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES@
+  required_system_packages: @SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES@
+  bootstrap_check: |
+    @SYMPHONY_SANDBOX_BOOTSTRAP_CHECK@
+  notes: |
+    @SYMPHONY_SANDBOX_REQUIREMENTS_NOTES@
 agent:
   max_concurrent_agents: @SYMPHONY_MAX_CONCURRENT_AGENTS@
   max_turns: @SYMPHONY_MAX_TURNS@
@@ -92,6 +102,15 @@ Issue:
 - URL: {{ issue.url }}
 - Labels: {{ issue.labels }}
 
+Sandbox contract:
+- Enforced: @SYMPHONY_SANDBOX_CONTRACT_ENFORCED@
+- Requirements audited: @SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED@
+- Required commands: @SYMPHONY_SANDBOX_REQUIRED_COMMANDS@
+- Required Python modules: @SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES@
+- Required system packages: @SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES@
+- Bootstrap smoke check: @SYMPHONY_SANDBOX_BOOTSTRAP_CHECK@
+- Notes: @SYMPHONY_SANDBOX_REQUIREMENTS_NOTES@
+
 Description:
 {% if issue.description %}
 {{ issue.description }}
@@ -114,8 +133,9 @@ Operating rules:
 11. Use `sandbox_visible_exec` and the sandbox GUI/noVNC path for UI validation when the task is visual, interactive, demo-oriented, or real-user tested. Record transcript paths from `.symphony/visible-exec/` in the workpad.
 12. Ask before production access, sensitive data access, or destructive actions.
 13. Missing local validation tooling or routine development dependencies are not hard blockers by themselves. Before handoff, bootstrap documented tools inside the sandbox with project setup scripts, a package manager, or a user-level virtualenv; use CI only as a supplement unless local provisioning fails for a concrete reason the agent cannot fix.
-14. If blocked by missing project auth, repo auth, secrets, hardware, missing `gh`, unauthenticated `gh`, non-installable system packages, or external services, document the exact blocker in the workpad, remove the active routing label when one is configured, and stop.
-15. Do not copy host credentials into the sandbox unless the project workflow explicitly requires it.
+14. Treat the declared sandbox contract as the minimum local validation baseline. If a sandbox is missing a declared command, module, package, or bootstrap smoke capability, fix the sandbox setup first or record why provisioning failed; do not convert routine setup drift into an issue-level caveat.
+15. If blocked by missing project auth, repo auth, secrets, hardware, missing `gh`, unauthenticated `gh`, non-installable system packages, or external services, document the exact blocker in the workpad, remove the active routing label when one is configured, and stop.
+16. Do not copy host credentials into the sandbox unless the project workflow explicitly requires it.
 
 Canonical GitHub/OpenClaw behavior:
 
