@@ -67,8 +67,8 @@ Created Symphony project instance:
 
 Next:
   1. Edit $INSTANCE_ROOT/symphony.env
-  2. Set LINEAR_API_KEY, SYMPHONY_LINEAR_PROJECT_SLUG, and SYMPHONY_SOURCE_REPO_URL
-  3. Run: cd "$INSTANCE_ROOT" && bin/doctor.sh
-  4. Run: cd "$INSTANCE_ROOT" && bin/start.sh
+  2. Set tracker auth/project values and SYMPHONY_SOURCE_REPO_URL
+  3. Audit and declare sandbox requirements in symphony.env
+  4. Run: cd "$INSTANCE_ROOT" && bin/doctor.sh
+  5. Run: cd "$INSTANCE_ROOT" && bin/start.sh
 EOF
-

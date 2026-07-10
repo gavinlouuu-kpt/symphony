@@ -9,6 +9,9 @@ defmodule SymphonyElixir.Config.Schema do
 
   @primary_key false
 
+  @linear_default_endpoint "https://api.linear.app/graphql"
+  @github_default_endpoint "https://api.github.com"
+
   @type t :: %__MODULE__{}
 
   defmodule StringOrMap do
@@ -212,6 +215,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:role_agents, {:array, :string}, default: [])
+      field(:unroute_grace_ms, :integer, default: 300_000)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -219,14 +224,24 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :max_concurrent_agents_by_state,
+          :role_agents,
+          :unroute_grace_ms
+        ],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
+      |> validate_number(:unroute_grace_ms, greater_than_or_equal_to: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
+      |> update_change(:role_agents, &Schema.normalize_string_list/1)
+      |> validate_length(:role_agents, max: 12)
     end
   end
 
@@ -301,6 +316,205 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule SandboxContract do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enforced, :boolean, default: false)
+      field(:audited, :boolean, default: false)
+      field(:required_commands, {:array, :string}, default: [])
+      field(:required_python_modules, {:array, :string}, default: [])
+      field(:required_system_packages, {:array, :string}, default: [])
+      field(:bootstrap_check, :string)
+      field(:notes, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :enforced,
+          :audited,
+          :required_commands,
+          :required_python_modules,
+          :required_system_packages,
+          :bootstrap_check,
+          :notes
+        ],
+        empty_values: []
+      )
+      |> update_change(:required_commands, &normalize_string_list/1)
+      |> update_change(:required_python_modules, &normalize_string_list/1)
+      |> update_change(:required_system_packages, &normalize_string_list/1)
+      |> validate_enforced_contract()
+    end
+
+    defp normalize_string_list(values) when is_list(values) do
+      values
+      |> Enum.map(&(to_string(&1) |> String.trim()))
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+    end
+
+    defp normalize_string_list(value) when is_binary(value) do
+      value
+      |> String.split(",")
+      |> normalize_string_list()
+    end
+
+    defp normalize_string_list(_value), do: []
+
+    defp validate_enforced_contract(changeset) do
+      case get_field(changeset, :enforced) do
+        true ->
+          changeset
+          |> require_audited()
+          |> validate_required([:bootstrap_check])
+          |> validate_non_empty_bootstrap_check()
+          |> require_any_requirement()
+
+        _ ->
+          changeset
+      end
+    end
+
+    defp require_audited(changeset) do
+      case get_field(changeset, :audited) do
+        true -> changeset
+        _ -> add_error(changeset, :audited, "must be true when sandbox contract is enforced")
+      end
+    end
+
+    defp validate_non_empty_bootstrap_check(changeset) do
+      validate_change(changeset, :bootstrap_check, fn :bootstrap_check, value ->
+        if is_binary(value) and String.trim(value) == "" do
+          [bootstrap_check: "can't be blank"]
+        else
+          []
+        end
+      end)
+    end
+
+    defp require_any_requirement(changeset) do
+      has_requirement? =
+        Enum.any?(
+          [
+            get_field(changeset, :required_commands, []),
+            get_field(changeset, :required_python_modules, []),
+            get_field(changeset, :required_system_packages, [])
+          ],
+          &(&1 != [])
+        ) ||
+          present?(get_field(changeset, :notes))
+
+      case has_requirement? do
+        true ->
+          changeset
+
+        false ->
+          add_error(
+            changeset,
+            :required_commands,
+            "must declare at least one sandbox requirement or note when contract is enforced"
+          )
+      end
+    end
+
+    defp present?(value) when is_binary(value), do: String.trim(value) != ""
+    defp present?(_value), do: false
+  end
+
+  defmodule EvidenceContract do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    alias SymphonyElixir.Config.Schema
+
+    @primary_key false
+    embedded_schema do
+      field(:enforced, :boolean, default: false)
+      field(:audited, :boolean, default: false)
+      field(:required_checks, {:array, :string}, default: [])
+      field(:required_artifacts, {:array, :string}, default: [])
+      field(:required_commands, {:array, :string}, default: [])
+      field(:notes, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :enforced,
+          :audited,
+          :required_checks,
+          :required_artifacts,
+          :required_commands,
+          :notes
+        ],
+        empty_values: []
+      )
+      |> update_change(:required_checks, &Schema.normalize_string_list/1)
+      |> update_change(:required_artifacts, &Schema.normalize_string_list/1)
+      |> update_change(:required_commands, &Schema.normalize_string_list/1)
+      |> validate_enforced_contract()
+    end
+
+    defp validate_enforced_contract(changeset) do
+      case get_field(changeset, :enforced) do
+        true ->
+          changeset
+          |> require_audited()
+          |> require_any_requirement()
+
+        _ ->
+          changeset
+      end
+    end
+
+    defp require_audited(changeset) do
+      case get_field(changeset, :audited) do
+        true -> changeset
+        _ -> add_error(changeset, :audited, "must be true when evidence contract is enforced")
+      end
+    end
+
+    defp require_any_requirement(changeset) do
+      has_requirement? =
+        Enum.any?(
+          [
+            get_field(changeset, :required_checks, []),
+            get_field(changeset, :required_artifacts, []),
+            get_field(changeset, :required_commands, [])
+          ],
+          &(&1 != [])
+        ) ||
+          present?(get_field(changeset, :notes))
+
+      case has_requirement? do
+        true ->
+          changeset
+
+        false ->
+          add_error(
+            changeset,
+            :required_checks,
+            "must declare at least one evidence requirement or note when contract is enforced"
+          )
+      end
+    end
+
+    defp present?(value) when is_binary(value), do: String.trim(value) != ""
+    defp present?(_value), do: false
+  end
+
   defmodule Observability do
     @moduledoc false
     use Ecto.Schema
@@ -319,6 +533,71 @@ defmodule SymphonyElixir.Config.Schema do
       |> cast(attrs, [:dashboard_enabled, :refresh_ms, :render_interval_ms], empty_values: [])
       |> validate_number(:refresh_ms, greater_than: 0)
       |> validate_number(:render_interval_ms, greater_than: 0)
+    end
+  end
+
+  defmodule OpenClaw do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:command, :string, default: "openclaw")
+      field(:channel, :string, default: "discord")
+      field(:account, :string)
+      field(:target, :string)
+      field(:timeout_ms, :integer, default: 10_000)
+      field(:intake_enabled, :boolean, default: false)
+      field(:intake_token, :string)
+      field(:intake_labels, {:array, :string}, default: [])
+
+      field(:events, {:array, :string},
+        default: [
+          "dispatch_started",
+          "role_agent_completed",
+          "agent_completed",
+          "issue_blocked",
+          "retry_scheduled"
+        ]
+      )
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :enabled,
+          :command,
+          :channel,
+          :account,
+          :target,
+          :timeout_ms,
+          :intake_enabled,
+          :intake_token,
+          :intake_labels,
+          :events
+        ],
+        empty_values: []
+      )
+      |> validate_number(:timeout_ms, greater_than: 0)
+      |> update_change(:intake_labels, &normalize_label_list/1)
+      |> update_change(:events, fn events ->
+        events
+        |> Enum.map(&(String.trim(&1) |> String.downcase()))
+        |> Enum.reject(&(&1 == ""))
+        |> Enum.uniq()
+      end)
+    end
+
+    defp normalize_label_list(labels) do
+      labels
+      |> Enum.map(&(String.trim(&1) |> String.downcase()))
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
     end
   end
 
@@ -350,7 +629,10 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:sandbox_contract, SandboxContract, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:evidence_contract, EvidenceContract, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:openclaw, OpenClaw, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
   end
 
@@ -414,6 +696,24 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   @doc false
+  @spec normalize_string_list(nil | [term()] | term()) :: [String.t()]
+  def normalize_string_list(nil), do: []
+
+  def normalize_string_list(values) when is_list(values) do
+    values
+    |> Enum.map(&(to_string(&1) |> String.trim()))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  def normalize_string_list(value) do
+    value
+    |> to_string()
+    |> String.split(",")
+    |> normalize_string_list()
+  end
+
+  @doc false
   @spec validate_state_limits(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
   def validate_state_limits(changeset, field) do
     validate_change(changeset, field, fn ^field, limits ->
@@ -443,14 +743,20 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
+    |> cast_embed(:sandbox_contract, with: &SandboxContract.changeset/2)
+    |> cast_embed(:evidence_contract, with: &EvidenceContract.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
+    |> cast_embed(:openclaw, with: &OpenClaw.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
   end
 
   defp finalize_settings(settings) do
+    tracker_kind = settings.tracker.kind
+
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
+      | endpoint: resolve_tracker_endpoint(tracker_kind, settings.tracker.endpoint),
+        api_key: resolve_secret_setting(settings.tracker.api_key, tracker_api_key_fallback(tracker_kind)),
         assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
     }
 
@@ -473,8 +779,32 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, cua: cua, codex: codex}
+    openclaw = %{
+      settings.openclaw
+      | command: resolve_optional_env_setting(settings.openclaw.command),
+        channel: resolve_optional_env_setting(settings.openclaw.channel),
+        account: resolve_optional_env_setting(settings.openclaw.account),
+        target: resolve_optional_env_setting(settings.openclaw.target),
+        intake_token:
+          resolve_secret_setting(
+            settings.openclaw.intake_token,
+            System.get_env("SYMPHONY_OPENCLAW_INTAKE_TOKEN")
+          )
+    }
+
+    %{settings | tracker: tracker, workspace: workspace, cua: cua, codex: codex, openclaw: openclaw}
   end
+
+  defp resolve_tracker_endpoint("github", endpoint)
+       when endpoint in [nil, "", @linear_default_endpoint],
+       do: @github_default_endpoint
+
+  defp resolve_tracker_endpoint(_kind, endpoint), do: endpoint
+
+  defp tracker_api_key_fallback("github"),
+    do: System.get_env("GITHUB_TOKEN") || System.get_env("GH_TOKEN")
+
+  defp tracker_api_key_fallback(_kind), do: System.get_env("LINEAR_API_KEY")
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
@@ -511,6 +841,17 @@ defmodule SymphonyElixir.Config.Schema do
       resolved -> resolved
     end
   end
+
+  defp resolve_optional_env_setting(nil), do: nil
+
+  defp resolve_optional_env_setting(value) when is_binary(value) do
+    case resolve_env_value(value, nil) do
+      resolved when is_binary(resolved) -> normalize_blank_string(resolved)
+      _ -> nil
+    end
+  end
+
+  defp resolve_optional_env_setting(_value), do: nil
 
   defp resolve_path_value(value, default) when is_binary(value) do
     case normalize_path_token(value) do
@@ -580,6 +921,11 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp normalize_secret_value(_value), do: nil
+
+  defp normalize_blank_string(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
 
   defp default_turn_sandbox_policy(workspace) do
     %{

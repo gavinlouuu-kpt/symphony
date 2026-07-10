@@ -73,6 +73,9 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
+  @spec add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def add_issue_labels(_issue_id, _labels), do: {:error, :unsupported_tracker_operation}
+
   defp client_module do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
   end

@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Tracker do
   @callback fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   @callback create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   @callback update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
+  @callback add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
 
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues do
@@ -36,9 +37,15 @@ defmodule SymphonyElixir.Tracker do
     adapter().update_issue_state(issue_id, state_name)
   end
 
+  @spec add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def add_issue_labels(issue_id, labels) do
+    adapter().add_issue_labels(issue_id, labels)
+  end
+
   @spec adapter() :: module()
   def adapter do
     case Config.settings!().tracker.kind do
+      "github" -> SymphonyElixir.Github.Adapter
       "memory" -> SymphonyElixir.Tracker.Memory
       _ -> SymphonyElixir.Linear.Adapter
     end

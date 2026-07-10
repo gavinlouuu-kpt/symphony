@@ -7,9 +7,11 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
+  alias SymphonyElixir.Codex.DynamicTool
   alias SymphonyElixir.Cua.Sandbox, as: CuaSandbox
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.OpenClaw.Notifier, as: OpenClawNotifier
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -205,6 +207,16 @@ defmodule SymphonyElixir.Orchestrator do
     else
       Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
+      OpenClawNotifier.publish(:agent_completed, %{
+        issue: running_entry.issue,
+        issue_id: issue_id,
+        identifier: running_entry.identifier,
+        session_id: session_id,
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path),
+        sandbox: Map.get(running_entry, :sandbox)
+      })
+
       state
       |> complete_issue(issue_id)
       |> schedule_issue_retry(issue_id, 1, %{
@@ -268,6 +280,34 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Linear project slug missing in WORKFLOW.md")
         state
 
+      {:error, :missing_github_api_token} ->
+        Logger.error("GitHub API token missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_github_repository} ->
+        Logger.error("GitHub repository missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_openclaw_command} ->
+        Logger.error("OpenClaw command missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_openclaw_channel} ->
+        Logger.error("OpenClaw channel missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_openclaw_target} ->
+        Logger.error("OpenClaw target missing in WORKFLOW.md")
+        state
+
+      {:error, :openclaw_intake_requires_github_tracker} ->
+        Logger.error("OpenClaw issue intake requires GitHub tracker mode in WORKFLOW.md")
+        state
+
+      {:error, :missing_openclaw_intake_token} ->
+        Logger.error("OpenClaw issue intake token missing in WORKFLOW.md")
+        state
+
       {:error, :missing_tracker_kind} ->
         Logger.error("Tracker kind missing in WORKFLOW.md")
 
@@ -295,7 +335,7 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+        Logger.error("Failed to fetch from tracker: #{inspect(reason)}")
         state
 
       false ->
@@ -422,9 +462,7 @@ defmodule SymphonyElixir.Orchestrator do
         terminate_running_issue(state, issue.id, true)
 
       !issue_routable?(issue) ->
-        Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
-
-        terminate_running_issue(state, issue.id, false)
+        handle_unrouted_running_issue(state, issue)
 
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
@@ -530,11 +568,189 @@ defmodule SymphonyElixir.Orchestrator do
   defp refresh_running_issue_state(%State{} = state, %Issue{} = issue) do
     case Map.get(state.running, issue.id) do
       %{issue: _} = running_entry ->
+        running_entry =
+          case Map.get(running_entry, :unrouted_at) do
+            %DateTime{} ->
+              Logger.info("Issue routed to this worker again during unroute grace: #{issue_context(issue)}; continuing agent run")
+
+              Map.delete(running_entry, :unrouted_at)
+
+            _ ->
+              running_entry
+          end
+
         %{state | running: Map.put(state.running, issue.id, %{running_entry | issue: issue})}
 
       _ ->
         state
     end
+  end
+
+  defp handle_unrouted_running_issue(%State{} = state, %Issue{} = issue) do
+    case Map.get(state.running, issue.id) do
+      nil ->
+        Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing claim")
+
+        terminate_running_issue(state, issue.id, false)
+
+      running_entry ->
+        missing_evidence = unrouted_missing_evidence(running_entry)
+        missing_labels = missing_required_labels(issue)
+
+        if missing_evidence != nil and missing_labels != [] and
+             routing_restore_count(running_entry) == 0 do
+          restore_routing_labels(state, issue, running_entry, missing_labels, missing_evidence)
+        else
+          drain_unrouted_running_issue(state, issue, running_entry)
+        end
+    end
+  end
+
+  # Returns the unmet evidence-contract requirements, or nil when the contract is
+  # satisfied, not enforced, or cannot be checked (no sandbox runtime info yet).
+  defp unrouted_missing_evidence(running_entry) do
+    with worker_host when is_binary(worker_host) <- Map.get(running_entry, :worker_host),
+         workspace when is_binary(workspace) <- Map.get(running_entry, :workspace_path),
+         {:error, missing} <-
+           handoff_evidence_checker().(%{worker_host: worker_host, workspace: workspace}) do
+      missing
+    else
+      _ -> nil
+    end
+  end
+
+  defp handoff_evidence_checker do
+    Application.get_env(
+      :symphony_elixir,
+      :handoff_evidence_checker,
+      &DynamicTool.handoff_evidence_status/1
+    )
+  end
+
+  defp missing_required_labels(%Issue{labels: labels}) do
+    issue_labels =
+      labels
+      |> List.wrap()
+      |> MapSet.new(&normalize_issue_state/1)
+
+    Config.settings!().tracker.required_labels
+    |> Enum.reject(fn label -> MapSet.member?(issue_labels, normalize_issue_state(label)) end)
+  end
+
+  defp routing_restore_count(running_entry), do: Map.get(running_entry, :routing_restore_count, 0)
+
+  defp restore_routing_labels(%State{} = state, %Issue{} = issue, running_entry, missing_labels, missing_evidence) do
+    case Tracker.add_issue_labels(issue.id, missing_labels) do
+      :ok ->
+        Logger.warning(
+          "Restored routing labels for #{issue_context(issue)} labels=#{inspect(missing_labels)}: handoff evidence contract not satisfied (#{summarize_missing_evidence(missing_evidence)}); agent run continues"
+        )
+
+        post_routing_restore_comment(issue, missing_labels, missing_evidence)
+
+        OpenClawNotifier.publish(:routing_label_restored, %{
+          issue: issue,
+          issue_id: issue.id,
+          identifier: issue.identifier,
+          labels: missing_labels,
+          missing_evidence: summarize_missing_evidence(missing_evidence),
+          worker_host: Map.get(running_entry, :worker_host)
+        })
+
+        updated_entry =
+          running_entry
+          |> Map.put(:routing_restore_count, routing_restore_count(running_entry) + 1)
+          |> Map.delete(:unrouted_at)
+
+        %{state | running: Map.put(state.running, issue.id, updated_entry)}
+
+      {:error, reason} ->
+        Logger.error("Failed to restore routing labels for #{issue_context(issue)} labels=#{inspect(missing_labels)}: #{inspect(reason)}; falling back to unroute grace")
+
+        drain_unrouted_running_issue(state, issue, running_entry)
+    end
+  end
+
+  defp post_routing_restore_comment(%Issue{} = issue, missing_labels, missing_evidence) do
+    labels = Enum.map_join(missing_labels, ", ", &"`#{&1}`")
+
+    body = """
+    Symphony restored the routing label(s) #{labels}: the handoff evidence contract is not satisfied (missing: #{summarize_missing_evidence(missing_evidence)}).
+
+    Record the required evidence with `symphony_record_evidence` before removing the routing label. Removing it without recorded evidence is treated as a premature handoff.
+
+    _Posted automatically by the Symphony orchestrator._
+    """
+
+    case Tracker.create_comment(issue.id, body) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("Failed to post routing-restore comment for #{issue_context(issue)}: #{inspect(reason)}")
+    end
+  end
+
+  defp summarize_missing_evidence(missing) when is_list(missing) do
+    missing
+    |> Enum.map(fn
+      %{"check" => check} -> "check #{check}"
+      %{"command" => command} -> "command #{command}"
+      %{"artifact" => artifact} -> "artifact #{artifact}"
+      other -> inspect(other)
+    end)
+    |> Enum.join("; ")
+  end
+
+  defp summarize_missing_evidence(missing), do: inspect(missing)
+
+  defp drain_unrouted_running_issue(%State{} = state, %Issue{} = issue, running_entry) do
+    grace_ms = Config.settings!().agent.unroute_grace_ms
+    now = DateTime.utc_now()
+
+    case Map.get(running_entry, :unrouted_at) do
+      nil when grace_ms > 0 ->
+        Logger.warning("Issue no longer routed to this worker: #{issue_context(issue)}; stopping agent after #{grace_ms}ms grace unless routing is restored")
+
+        OpenClawNotifier.publish(:issue_unrouted, %{
+          issue: issue,
+          issue_id: issue.id,
+          identifier: issue.identifier,
+          phase: :draining,
+          grace_ms: grace_ms,
+          worker_host: Map.get(running_entry, :worker_host),
+          sandbox: Map.get(running_entry, :sandbox)
+        })
+
+        updated_entry =
+          running_entry
+          |> Map.put(:unrouted_at, now)
+          |> Map.put(:issue, issue)
+
+        %{state | running: Map.put(state.running, issue.id, updated_entry)}
+
+      %DateTime{} = unrouted_at ->
+        if DateTime.diff(now, unrouted_at, :millisecond) >= grace_ms do
+          stop_unrouted_running_issue(state, issue, running_entry)
+        else
+          %{state | running: Map.put(state.running, issue.id, Map.put(running_entry, :issue, issue))}
+        end
+
+      _ ->
+        stop_unrouted_running_issue(state, issue, running_entry)
+    end
+  end
+
+  defp stop_unrouted_running_issue(%State{} = state, %Issue{} = issue, running_entry) do
+    Logger.info("Issue no longer routed to this worker: #{issue_context(issue)}; stopping active agent and cleaning up its workspace")
+
+    OpenClawNotifier.publish(:issue_unrouted, %{
+      issue: issue,
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      phase: :stopped,
+      worker_host: Map.get(running_entry, :worker_host),
+      sandbox: Map.get(running_entry, :sandbox)
+    })
+
+    terminate_running_issue(state, issue.id, true)
   end
 
   defp refresh_blocked_issue_state(%State{} = state, %Issue{} = issue) do
@@ -765,6 +981,8 @@ defmodule SymphonyElixir.Orchestrator do
       last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
     }
 
+    OpenClawNotifier.publish(:issue_blocked, blocked_entry)
+
     %{
       state
       | running: Map.delete(state.running, issue_id),
@@ -956,6 +1174,12 @@ defmodule SymphonyElixir.Orchestrator do
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
+        OpenClawNotifier.publish(:dispatch_started, %{
+          issue: issue,
+          attempt: attempt,
+          worker_host: worker_host
+        })
+
         running =
           Map.put(state.running, issue.id, %{
             pid: pid,
@@ -1055,6 +1279,18 @@ defmodule SymphonyElixir.Orchestrator do
 
     Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{next_attempt})#{error_suffix}")
 
+    OpenClawNotifier.publish(:retry_scheduled, %{
+      issue_id: issue_id,
+      identifier: identifier,
+      issue_url: issue_url,
+      attempt: next_attempt,
+      delay_ms: delay_ms,
+      error: error,
+      worker_host: worker_host,
+      workspace_path: workspace_path,
+      sandbox: sandbox
+    })
+
     %{
       state
       | retry_attempts:
@@ -1124,6 +1360,12 @@ defmodule SymphonyElixir.Orchestrator do
 
       retry_candidate_issue?(issue, terminal_states) ->
         handle_active_retry(state, issue, attempt, metadata)
+
+      !issue_routable?(issue) ->
+        Logger.info("Issue no longer routed to this worker at retry: #{issue_context(issue)}; removing claim and cleaning up its workspace")
+
+        cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
+        {:noreply, release_issue_claim(state, issue_id)}
 
       true ->
         Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")

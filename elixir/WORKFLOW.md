@@ -30,7 +30,7 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -94,6 +94,37 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - Move status only when the matching quality bar is met.
 - Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
 - Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
+
+## Built-in sub-agent harness
+
+Use a real Codex delegated-agent tool only when it is explicitly present in the active tool list
+(for example, a `spawn_agent`/multi-agent tool). Do not use the `/review` command as a substitute:
+`/review` is a mode/manual review surface, not a delegated sub-agent. If no delegated-agent tool is
+available, stay single-agent and record that choice in the workpad. Do not simulate sub-agents with
+ad hoc shell scripts or by spawning extra orchestrators. Keep the main agent as the integrator that
+owns Linear state, final commits, PRs, and the workpad.
+
+For non-trivial, ambiguous, UI-heavy, or long-running issues, follow a Planner -> Generator ->
+Evaluator loop:
+
+1. Planner: call a planning/explorer sub-agent before implementation. Ask it to inspect the issue,
+   repo shape, current workpad, affected user-facing inventory, acceptance criteria, risks, and
+   validation plan. Persist the resulting sprint contract in the Linear workpad and, when useful,
+   under `.symphony/harness/{{ issue.identifier }}/plan.md`.
+2. Generator: call one or more worker sub-agents only for bounded implementation slices with
+   explicit file/module ownership. Tell every worker it is not alone in the codebase, must avoid
+   reverting others' work, and must return changed paths plus validation evidence. Keep write
+   scopes disjoint when multiple generators run.
+3. Evaluator: after generator work, call a separate evaluator sub-agent with fresh instructions
+   and the sprint contract. It must inspect the actual diff, run focused tests, use app/runtime
+   validation for real-user/UI/demo work, probe edge cases, and report pass/fail findings without
+   relying on the generator's summary. Running `/review` does not satisfy this evaluator phase.
+4. Integrate: the main agent applies or reconciles generator outputs, fixes evaluator findings,
+   updates the workpad, and repeats Generator -> Evaluator until the sprint contract passes or a
+   real external blocker is proven.
+5. For tiny mechanical changes where a sub-agent would add overhead, stay single-agent and record
+   that choice briefly in the workpad. Never let the same agent that generated the change be the
+   only evaluator for substantial work.
 
 ## Related skills
 

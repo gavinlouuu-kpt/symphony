@@ -1,22 +1,12 @@
 ---
 tracker:
-  kind: linear
-  endpoint: https://api.linear.app/graphql
-  api_key: "$LINEAR_API_KEY"
-  project_slug: "@SYMPHONY_LINEAR_PROJECT_SLUG@"
-  required_labels: []
-  active_states:
-    - Todo
-    - In Progress
-    - Rework
-    - Merging
-    - Human Review
-  terminal_states:
-    - Closed
-    - Cancelled
-    - Canceled
-    - Duplicate
-    - Done
+  kind: "@SYMPHONY_TRACKER_KIND@"
+  endpoint: "@SYMPHONY_TRACKER_ENDPOINT@"
+  api_key: "$@SYMPHONY_TRACKER_API_KEY_ENV@"
+  project_slug: "@SYMPHONY_TRACKER_PROJECT@"
+  required_labels: @SYMPHONY_TRACKER_REQUIRED_LABELS@
+  active_states: @SYMPHONY_TRACKER_ACTIVE_STATES@
+  terminal_states: @SYMPHONY_TRACKER_TERMINAL_STATES@
 polling:
   interval_ms: @SYMPHONY_POLL_INTERVAL_MS@
 workspace:
@@ -42,31 +32,69 @@ cua:
   wait_for_ssh: true
   launch_timeout_ms: @SYMPHONY_CUA_LAUNCH_TIMEOUT_MS@
   volumes: []
-  docker_args: []
+  docker_args: @SYMPHONY_CUA_DOCKER_ARGS@
 hooks:
+  # The extra line renders empty when no extra setup is configured; a bare
+  # if-block would be a bash syntax error with an empty body.
   after_create: |
     set -eu
+    if command -v gh >/dev/null 2>&1; then gh auth setup-git >/dev/null 2>&1 || true; fi
     git clone --depth 1 --branch "@SYMPHONY_SOURCE_REPO_BRANCH@" "@SYMPHONY_SOURCE_REPO_URL@" .
-    if [ -n "@SYMPHONY_AFTER_CREATE_EXTRA@" ]; then
-      @SYMPHONY_AFTER_CREATE_EXTRA@
-    fi
+    @SYMPHONY_AFTER_CREATE_EXTRA@
+sandbox_contract:
+  enforced: @SYMPHONY_SANDBOX_CONTRACT_ENFORCED@
+  audited: @SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED@
+  required_commands: @SYMPHONY_SANDBOX_REQUIRED_COMMANDS@
+  required_python_modules: @SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES@
+  required_system_packages: @SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES@
+  bootstrap_check: |
+    @SYMPHONY_SANDBOX_BOOTSTRAP_CHECK@
+  notes: |
+    @SYMPHONY_SANDBOX_REQUIREMENTS_NOTES@
+evidence_contract:
+  enforced: @SYMPHONY_EVIDENCE_CONTRACT_ENFORCED@
+  audited: @SYMPHONY_EVIDENCE_REQUIREMENTS_AUDITED@
+  required_checks: @SYMPHONY_EVIDENCE_REQUIRED_CHECKS@
+  required_artifacts: @SYMPHONY_EVIDENCE_REQUIRED_ARTIFACTS@
+  required_commands: @SYMPHONY_EVIDENCE_REQUIRED_COMMANDS@
+  notes: |
+    @SYMPHONY_EVIDENCE_REQUIREMENTS_NOTES@
 agent:
   max_concurrent_agents: @SYMPHONY_MAX_CONCURRENT_AGENTS@
   max_turns: @SYMPHONY_MAX_TURNS@
+  unroute_grace_ms: @SYMPHONY_UNROUTE_GRACE_MS@
+  role_agents:
+    - planner
+    - generator
+    - evaluator
 codex:
   command: >
     @SYMPHONY_CODEX_COMMAND@
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy: null
+  # Long builds/browser sessions run as single silent tool calls; a short stall
+  # timeout kills healthy runs mid-build.
+  stall_timeout_ms: @SYMPHONY_CODEX_STALL_TIMEOUT_MS@
 observability:
   dashboard_enabled: true
+openclaw:
+  enabled: @SYMPHONY_OPENCLAW_ENABLED@
+  command: "@SYMPHONY_OPENCLAW_COMMAND@"
+  channel: "@SYMPHONY_OPENCLAW_CHANNEL@"
+  account: "@SYMPHONY_OPENCLAW_ACCOUNT@"
+  target: "@SYMPHONY_OPENCLAW_TARGET@"
+  timeout_ms: @SYMPHONY_OPENCLAW_TIMEOUT_MS@
+  intake_enabled: @SYMPHONY_OPENCLAW_INTAKE_ENABLED@
+  intake_token: "$@SYMPHONY_OPENCLAW_INTAKE_TOKEN_ENV@"
+  intake_labels: @SYMPHONY_OPENCLAW_INTAKE_LABELS@
+  events: @SYMPHONY_OPENCLAW_EVENTS@
 server:
   host: "@SYMPHONY_DASHBOARD_HOST@"
   port: @SYMPHONY_DASHBOARD_PORT@
 ---
 
-You are working on Linear issue `{{ issue.identifier }}` for the project handled by this Symphony instance.
+You are working on tracker issue `{{ issue.identifier }}` for the project handled by this Symphony instance.
 
 Symphony is running Codex on the host orchestrator. The issue workspace itself is a CUA sandbox.
 When you need to inspect, edit, run commands, or validate project code, use the sandbox tools:
@@ -75,9 +103,14 @@ When you need to inspect, edit, run commands, or validate project code, use the 
 - `sandbox_visible_exec` for commands, app starts, browser sessions, demos, or tests that must be visible through noVNC.
 - `sandbox_read_file` for reading files from the CUA workspace.
 - `sandbox_write_file` for writing files into the CUA workspace.
-- `linear_graphql` for Linear updates and issue context.
+- `symphony_record_evidence` for running required validation commands that must count toward the configured handoff evidence contract.
+- `symphony_thread_post` for posting concise status updates and visual evidence into this issue's Discord thread when OpenClaw is enabled.
+- `linear_graphql` for Linear updates and issue context when this instance uses Linear.
+- For GitHub-backed workflows, use the `gh` CLI for issue/PR metadata and updates; keep project code commands inside the sandbox tools. Do not use approval-gated GitHub connector/MCP write tools in unattended workers.
 
 Do not use host-local shell commands or host-local file edits for project work unless explicitly instructed by Symphony.
+
+Container engines (docker/compose) are not available inside issue sandboxes by design. Treat missing `docker` as a validation-strategy signal, not an external blocker: run the affected app's dev server or build inside the sandbox and complete browser/runtime passes there via noVNC, citing the in-sandbox evidence.
 
 Issue:
 - Identifier: {{ issue.identifier }}
@@ -85,6 +118,23 @@ Issue:
 - State: {{ issue.state }}
 - URL: {{ issue.url }}
 - Labels: {{ issue.labels }}
+
+Sandbox contract:
+- Enforced: @SYMPHONY_SANDBOX_CONTRACT_ENFORCED@
+- Requirements audited: @SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED@
+- Required commands: @SYMPHONY_SANDBOX_REQUIRED_COMMANDS@
+- Required Python modules: @SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES@
+- Required system packages: @SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES@
+- Bootstrap smoke check: @SYMPHONY_SANDBOX_BOOTSTRAP_CHECK@
+- Notes: @SYMPHONY_SANDBOX_REQUIREMENTS_NOTES@
+
+Evidence contract:
+- Enforced: @SYMPHONY_EVIDENCE_CONTRACT_ENFORCED@
+- Requirements audited: @SYMPHONY_EVIDENCE_REQUIREMENTS_AUDITED@
+- Required checks: @SYMPHONY_EVIDENCE_REQUIRED_CHECKS@
+- Required artifacts: @SYMPHONY_EVIDENCE_REQUIRED_ARTIFACTS@
+- Required commands: @SYMPHONY_EVIDENCE_REQUIRED_COMMANDS@
+- Notes: @SYMPHONY_EVIDENCE_REQUIREMENTS_NOTES@
 
 Description:
 {% if issue.description %}
@@ -96,7 +146,7 @@ No description provided.
 Operating rules:
 
 1. Work autonomously end to end inside the CUA sandbox.
-2. Keep a single Linear workpad comment current with plan, acceptance criteria, validation, and final status.
+2. Keep a single issue workpad/update comment current with plan, acceptance criteria, validation, and final status.
 3. Reproduce or inspect the issue before changing code when possible.
 4. Run focused validation before marking work complete.
 5. Build sanitized, production-scale local data under production-like settings when the task needs realistic product validation.
@@ -107,5 +157,58 @@ Operating rules:
 10. Rerun the full affected inventory and stop only at a clean pass or a blocked handoff.
 11. Use `sandbox_visible_exec` and the sandbox GUI/noVNC path for UI validation when the task is visual, interactive, demo-oriented, or real-user tested. Record transcript paths from `.symphony/visible-exec/` in the workpad.
 12. Ask before production access, sensitive data access, or destructive actions.
-13. If blocked by missing project auth, repo auth, secrets, hardware, or external services, document the exact blocker in the workpad and stop.
-14. Do not copy host credentials into the sandbox unless the project workflow explicitly requires it.
+13. Missing local validation tooling or routine development dependencies are not hard blockers by themselves. Before handoff, bootstrap documented tools inside the sandbox with project setup scripts, a package manager, or a user-level virtualenv; use CI only as a supplement unless local provisioning fails for a concrete reason the agent cannot fix.
+14. Treat the declared sandbox contract as the minimum local validation baseline. If a sandbox is missing a declared command, module, package, or bootstrap smoke capability, fix the sandbox setup first or record why provisioning failed; do not convert routine setup drift into an issue-level caveat.
+15. If blocked by missing project auth, repo auth, secrets, hardware, missing `gh`, unauthenticated `gh`, non-installable system packages, or external services, document the exact blocker in the workpad, remove the active routing label when one is configured, and stop.
+16. Do not copy host credentials into the sandbox unless the project workflow explicitly requires it.
+17. Treat the declared evidence contract as the minimum PR handoff baseline. Use `symphony_record_evidence` for the required checks so Symphony can enforce them before handoff. If the issue claims a demo, screenshot, model output, runtime smoke, or real-user result, the workpad must link the real artifact path/URL and the exact command or transcript that produced it.
+18. Do not infer runtime success from `/health`, parser/unit tests, mocks, CI-only checks, model class names, screenshots from earlier runs, or planned behavior. If the required runtime/demo evidence is missing or fails, keep the issue routed and the PR draft.
+
+Canonical GitHub/OpenClaw behavior:
+
+- For GitHub-backed instances, use `gh` for issue comments, PR comments, labels, PR creation, and other GitHub writes. Do not use approval-gated connector writes in unattended workers.
+- Use one persistent issue comment headed `## Codex Workpad` as the durable source of truth for plan, acceptance criteria, validation, phase evidence, PR/commit links, and blockers.
+- Treat the project bookkeeping label, usually `symphony`, separately from the active routing label, usually `openclaw-intake`. The active routing label means Symphony should keep working the issue.
+- Remove only the active routing label when the PR is ready for human review, blocked on external input, or complete. Leave the issue open for normal review handoff and close it only after the configured merge/completion expectations are satisfied.
+- Do not remove the active routing label, mark ready for review, or close the issue until the workpad has distinct Planner, Generator, and Evaluator evidence.
+- Do not remove the active routing label, mark a PR ready, or close the issue until all declared evidence-contract checks are either passed with linked artifacts/commands or recorded as a true external blocker.
+- Symphony enforces this server-side: if the active routing label disappears while the evidence contract is unmet, the orchestrator restores the label, posts a corrective issue comment, and keeps the run going. When the label is removed with the contract satisfied, the orchestrator lets the in-flight role agent finish inside a grace window, then stops and cleans up the sandbox. Do not fight the restore; record the required evidence first.
+- Discord/OpenClaw status belongs in one issue thread. `dispatch_started` creates or finds the thread; `role_agent_completed`, `agent_completed`, `issue_blocked`, `retry_scheduled`, `issue_unrouted`, and `routing_label_restored` post there. If the thread is missing or updates land in the parent channel, repair or backfill the thread and record the correction.
+- Treat the issue's Discord thread as the live workpad mirror. At each role milestone (plan ready, implementation pushed, validation verdict, handoff), post a concise `symphony_thread_post` update summarizing the workpad delta so a human can follow the issue from Discord alone.
+- Post visual evidence to the thread with `symphony_thread_post` `media_path`: save a screenshot/photo/short recording under `.symphony/artifacts/` in the sandbox (for UI work capture the CUA desktop, e.g. `DISPLAY=:0 scrot .symphony/artifacts/<name>.png` or an equivalent tool, or copy test-produced screenshots) and attach it. UI-facing work must include at least one visual evidence post before handoff.
+
+Independent role-agent harness:
+
+This workflow is configured with `agent.role_agents`, so Symphony starts separate Planner,
+Generator, and Evaluator app-server sessions for each routed issue. A single agent writing three
+sections in one prompt does not satisfy the contract.
+
+1. Planner: inspect the issue, repo shape, current workpad/update comment, affected user-facing
+   inventory, acceptance criteria, risks, and validation plan. Persist the resulting sprint
+   contract in the issue workpad/update comment and, when useful, under
+   `.symphony/harness/{{ issue.identifier }}/plan.md`. Do not implement code.
+2. Generator: implement only the accepted Planner contract. Keep changes scoped, avoid reverting
+   unrelated work, and return changed paths plus validation evidence. Do not claim final review.
+3. Evaluator: inspect the actual diff, tests, workpad, PR/check state, docs, and guardrails with a
+   fresh independent session. Use `sandbox_visible_exec` for real-user/UI/demo validation. Running
+   `/review` does not satisfy this evaluator agent.
+4. If Generator or Evaluator leaves the issue active and routed, Symphony may run another
+   independent Planner -> Generator -> Evaluator cycle until the contract passes or a real external
+   blocker is proven.
+
+Codex subagent use inside a role session is allowed for bounded, independent work:
+
+- Planner may spawn read-only subagents for separable discovery surfaces on Medium/Large issues.
+- Generator may spawn subagents for investigation, validation triage, or test/log analysis, but Generator owns the implementation diff.
+- Evaluator may spawn focused review subagents for correctness, tests, docs, security, UI/runtime smoke, or operational risk.
+- Subagents must return summaries that the active role agent reconciles into its own `### Phase Evidence`.
+- Subagents must not edit project files, push branches, change tracker labels, close issues, or mark handoff complete unless the project workflow explicitly grants that authority.
+
+Runtime and demo evidence:
+
+- Runtime/demo evidence must come from the actual command output or artifact produced during this issue cycle.
+- Required evidence-contract checks must be recorded with `symphony_record_evidence`; normal `sandbox_exec` output does not satisfy the handoff gate.
+- A health endpoint proves only process liveness. It does not prove inference, UI behavior, GPU access, or end-to-end product behavior unless the acceptance criteria explicitly require only health.
+- For GPU/model work, required evidence includes in-environment accelerator visibility when applicable, real model load, the real prediction/inference request from the caller's network or product path, and the downstream product artifact when the issue asks for user-visible output.
+- For screenshots, videos, logs, MLflow runs, object-store paths, or noVNC transcripts, record the artifact path/URL and generation command. If no artifact was captured, say so explicitly and do not claim a demo.
+- If evidence is later found invalid, retract it in the workpad/PR, restore the active routing label, keep or convert the PR to draft, and continue with a new Planner -> Generator -> Evaluator cycle.

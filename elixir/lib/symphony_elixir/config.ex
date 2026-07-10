@@ -115,29 +115,87 @@ defmodule SymphonyElixir.Config do
   end
 
   defp validate_semantics(settings) do
+    with :ok <- validate_tracker_kind(settings.tracker.kind),
+         :ok <- validate_worker_settings(settings),
+         :ok <- validate_tracker_settings(settings.tracker) do
+      validate_openclaw_settings(settings.openclaw, settings.tracker.kind)
+    end
+  end
+
+  defp validate_tracker_kind(nil), do: {:error, :missing_tracker_kind}
+  defp validate_tracker_kind(kind) when kind in ["github", "linear", "memory"], do: :ok
+  defp validate_tracker_kind(kind), do: {:error, {:unsupported_tracker_kind, kind}}
+
+  defp validate_worker_settings(settings) do
     cond do
-      is_nil(settings.tracker.kind) ->
-        {:error, :missing_tracker_kind}
-
-      settings.tracker.kind not in ["linear", "memory"] ->
-        {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
-
       settings.worker.provider not in ["ssh", "cua"] ->
         {:error, {:unsupported_worker_provider, settings.worker.provider}}
 
       settings.worker.provider == "cua" and settings.cua.driver != "docker" ->
         {:error, {:unsupported_cua_driver, settings.cua.driver}}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
-        {:error, :missing_linear_api_token}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
-
       true ->
         :ok
     end
   end
+
+  defp validate_tracker_settings(%{kind: "linear", api_key: api_key}) when not is_binary(api_key),
+    do: {:error, :missing_linear_api_token}
+
+  defp validate_tracker_settings(%{kind: "linear", project_slug: project_slug})
+       when not is_binary(project_slug),
+       do: {:error, :missing_linear_project_slug}
+
+  defp validate_tracker_settings(%{kind: "github", api_key: api_key}) when not is_binary(api_key),
+    do: {:error, :missing_github_api_token}
+
+  defp validate_tracker_settings(%{kind: "github", project_slug: project_slug})
+       when not is_binary(project_slug),
+       do: {:error, :missing_github_repository}
+
+  defp validate_tracker_settings(_tracker), do: :ok
+
+  defp validate_openclaw_settings(openclaw, tracker_kind) do
+    with :ok <- validate_openclaw_intake(openclaw, tracker_kind) do
+      validate_openclaw_outbound(openclaw)
+    end
+  end
+
+  defp validate_openclaw_intake(
+         %{intake_enabled: true},
+         tracker_kind
+       )
+       when tracker_kind != "github",
+       do: {:error, :openclaw_intake_requires_github_tracker}
+
+  defp validate_openclaw_intake(%{intake_enabled: true, intake_token: token}, _tracker_kind)
+       when not is_binary(token),
+       do: {:error, :missing_openclaw_intake_token}
+
+  defp validate_openclaw_intake(%{intake_enabled: true, intake_token: token}, _tracker_kind)
+       when is_binary(token) do
+    if non_empty_binary?(token), do: :ok, else: {:error, :missing_openclaw_intake_token}
+  end
+
+  defp validate_openclaw_intake(_openclaw, _tracker_kind), do: :ok
+
+  defp validate_openclaw_outbound(%{enabled: true} = openclaw) do
+    with :ok <- require_openclaw_setting(openclaw.command, :missing_openclaw_command),
+         :ok <- require_openclaw_setting(openclaw.channel, :missing_openclaw_channel) do
+      require_openclaw_setting(openclaw.target, :missing_openclaw_target)
+    end
+  end
+
+  defp validate_openclaw_outbound(_openclaw), do: :ok
+
+  defp require_openclaw_setting(value, error) when is_binary(value) do
+    if non_empty_binary?(value), do: :ok, else: {:error, error}
+  end
+
+  defp require_openclaw_setting(_value, error), do: {:error, error}
+
+  defp non_empty_binary?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_empty_binary?(_value), do: false
 
   defp format_config_error(reason) do
     case reason do

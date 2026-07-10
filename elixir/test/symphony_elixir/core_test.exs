@@ -113,6 +113,11 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
 
     assert String.trim(prompt) != ""
+    assert prompt =~ "## Built-in sub-agent harness"
+    assert prompt =~ "Planner -> Generator ->"
+    assert prompt =~ "Use a real Codex delegated-agent tool only when it is explicitly present"
+    assert prompt =~ "Do not use the `/review` command as a substitute"
+    assert prompt =~ "Running `/review` does not satisfy this evaluator phase"
     assert is_binary(Config.workflow_prompt())
     assert Config.workflow_prompt() == prompt
   end
@@ -430,6 +435,309 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "unrouted running issue enters grace instead of stopping immediately" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unroute-grace-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-unroute-grace"
+    issue_identifier = "MT-560"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: test_root,
+        tracker_required_labels: ["openclaw-intake"],
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Closed"]
+      )
+
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "In Progress",
+        title: "Unrouted",
+        labels: ["symphony"]
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      assert %{unrouted_at: %DateTime{}} = Map.get(updated_state.running, issue_id)
+      assert MapSet.member?(updated_state.claimed, issue_id)
+      assert Process.alive?(agent_pid)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "unrouted running issue stops and cleans workspace after grace expiry" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unroute-expiry-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-unroute-expiry"
+    issue_identifier = "MT-561"
+    workspace = Path.join(test_root, issue_identifier)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: test_root,
+        tracker_required_labels: ["openclaw-intake"],
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Closed"]
+      )
+
+      File.mkdir_p!(workspace)
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            started_at: DateTime.utc_now(),
+            unrouted_at: DateTime.add(DateTime.utc_now(), -400, :second)
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "In Progress",
+        title: "Unrouted",
+        labels: ["symphony"]
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Process.alive?(agent_pid)
+      refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "premature handoff restores routing labels and keeps the agent running" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unroute-restore-#{System.unique_integer([:positive])}"
+      )
+
+    previous_checker = Application.get_env(:symphony_elixir, :handoff_evidence_checker)
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-unroute-restore"
+    issue_identifier = "MT-562"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_required_labels: ["openclaw-intake"],
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Closed"]
+      )
+
+      Application.put_env(:symphony_elixir, :handoff_evidence_checker, fn _sandbox ->
+        {:error, [%{"check" => "evaluator handoff evidence review"}]}
+      end)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            worker_host: "cua@127.0.0.1:22000",
+            workspace_path: "/home/cua/workspaces/#{issue_identifier}",
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "In Progress",
+        title: "Premature handoff",
+        labels: ["symphony"]
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      assert_received {:memory_tracker_labels_added, ^issue_id, ["openclaw-intake"]}
+      assert_received {:memory_tracker_comment, ^issue_id, comment}
+      assert comment =~ "openclaw-intake"
+      assert comment =~ "evaluator handoff evidence review"
+
+      running_entry = Map.get(updated_state.running, issue_id)
+      assert running_entry.routing_restore_count == 1
+      refute Map.has_key?(running_entry, :unrouted_at)
+      assert Process.alive?(agent_pid)
+    after
+      restore_app_env(:handoff_evidence_checker, previous_checker)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "second premature handoff drains instead of restoring again" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unroute-restore-once-#{System.unique_integer([:positive])}"
+      )
+
+    previous_checker = Application.get_env(:symphony_elixir, :handoff_evidence_checker)
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-unroute-restore-once"
+    issue_identifier = "MT-563"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_required_labels: ["openclaw-intake"],
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Closed"]
+      )
+
+      Application.put_env(:symphony_elixir, :handoff_evidence_checker, fn _sandbox ->
+        {:error, [%{"check" => "evaluator handoff evidence review"}]}
+      end)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            worker_host: "cua@127.0.0.1:22000",
+            workspace_path: "/home/cua/workspaces/#{issue_identifier}",
+            routing_restore_count: 1,
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "In Progress",
+        title: "Premature handoff again",
+        labels: ["symphony"]
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      refute_received {:memory_tracker_labels_added, ^issue_id, _labels}
+      assert %{unrouted_at: %DateTime{}} = Map.get(updated_state.running, issue_id)
+      assert Process.alive?(agent_pid)
+    after
+      restore_app_env(:handoff_evidence_checker, previous_checker)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "issue routed again during grace clears the drain marker" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unroute-rerouted-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-unroute-rerouted"
+    issue_identifier = "MT-564"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: test_root,
+        tracker_required_labels: ["openclaw-intake"],
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Closed"]
+      )
+
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            unrouted_at: DateTime.utc_now(),
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "In Progress",
+        title: "Routed again",
+        labels: ["symphony", "openclaw-intake"]
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      running_entry = Map.get(updated_state.running, issue_id)
+      refute Map.has_key?(running_entry, :unrouted_at)
+      assert Process.alive?(agent_pid)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "reconcile updates running issue state for active issues" do
     issue_id = "issue-3"
 
@@ -470,6 +778,8 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "reconcile stops running issue when it is reassigned away from this worker" do
+    write_workflow_file!(Workflow.workflow_file_path(), unroute_grace_ms: 0)
+
     issue_id = "issue-reassigned"
 
     agent_pid =
@@ -517,7 +827,10 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "reconcile stops running issue when a required label is removed" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_required_labels: ["symphony"])
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_required_labels: ["symphony"],
+      unroute_grace_ms: 0
+    )
 
     issue_id = "issue-unlabeled"
 
@@ -1293,6 +1606,320 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner prepends CUA host prompt with delegated evaluator guidance" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-cua-prompt-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+    end)
+
+    try do
+      fake_bin_dir = Path.join(test_root, "bin")
+      workspace_root = "/remote/symphony-workspaces"
+      codex_binary = Path.join(test_root, "fake-codex")
+      docker_trace = Path.join(test_root, "docker.trace")
+      ssh_trace = Path.join(test_root, "ssh.trace")
+      codex_trace = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(fake_bin_dir)
+      File.mkdir_p!(test_root)
+
+      File.write!(Path.join(fake_bin_dir, "docker"), """
+      #!/bin/sh
+      printf 'ARGV:%s\\n' "$*" >> "#{docker_trace}"
+
+      case "$*" in
+        inspect*"symphony-mt-cua-prompt"*)
+          printf '%s\\n' 'true'
+          ;;
+        port*"22/tcp"*)
+          printf '%s\\n' '127.0.0.1:22123'
+          ;;
+        port*"5901/tcp"*)
+          printf '%s\\n' '127.0.0.1:16123'
+          ;;
+        port*"6901/tcp"*)
+          printf '%s\\n' '127.0.0.1:17123'
+          ;;
+        port*"8000/tcp"*)
+          printf '%s\\n' '127.0.0.1:18123'
+          ;;
+        *)
+          echo "unexpected docker call: $*" >&2
+          exit 2
+          ;;
+      esac
+      """)
+
+      File.write!(Path.join(fake_bin_dir, "ssh"), """
+      #!/bin/sh
+      printf 'ARGV:%s\\n' "$*" >> "#{ssh_trace}"
+
+      case "$*" in
+        *"__SYMPHONY_WORKSPACE__"*)
+          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{workspace_root}/MT-CUA-PROMPT'
+          ;;
+        *)
+          echo "unexpected ssh call: $*" >&2
+          exit 2
+          ;;
+      esac
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-cua-prompt"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cua-prompt"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(Path.join(fake_bin_dir, "docker"), 0o755)
+      File.chmod!(Path.join(fake_bin_dir, "ssh"), 0o755)
+      File.chmod!(codex_binary, 0o755)
+
+      System.put_env("PATH", fake_bin_dir <> ":" <> (previous_path || ""))
+      System.put_env("SYMP_TEST_CODEx_TRACE", codex_trace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        worker_provider: "cua",
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        max_turns: 1,
+        prompt: "Project workflow prompt."
+      )
+
+      issue = %Issue{
+        id: "issue-cua-prompt",
+        identifier: "MT-CUA-PROMPT",
+        title: "Clarify CUA evaluator",
+        description: "Pin the host prompt",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-CUA-PROMPT",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      turn_prompt =
+        codex_trace
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.find_value(fn
+          %{"method" => "turn/start", "params" => %{"input" => input}} ->
+            Enum.map_join(input, "\n", &Map.fetch!(&1, "text"))
+
+          _ ->
+            nil
+        end)
+
+      assert turn_prompt =~ "Symphony is running you on the host orchestrator"
+      assert turn_prompt =~ "When the workflow config has `agent.role_agents`"
+      assert turn_prompt =~ "separate independent Planner, Generator, and Evaluator app-server sessions"
+      assert turn_prompt =~ "Do not collapse those roles into one agent turn"
+      assert turn_prompt =~ "Do not treat /review as a delegated sub-agent"
+      assert turn_prompt =~ "does not satisfy the Evaluator agent"
+      assert turn_prompt =~ "Project workflow prompt."
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner supervises CUA host control workspace write failures generically" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-cua-supervision-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+    end)
+
+    try do
+      fake_bin_dir = Path.join(test_root, "bin")
+      workspace_root = "/home/cua/workspaces"
+      sandbox_workspace = Path.join(workspace_root, "MT-CUA-SUP")
+      codex_binary = Path.join(test_root, "fake-codex")
+      docker_trace = Path.join(test_root, "docker.trace")
+      ssh_trace = Path.join(test_root, "ssh.trace")
+      codex_trace = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(fake_bin_dir)
+      File.mkdir_p!(test_root)
+
+      File.write!(Path.join(fake_bin_dir, "docker"), """
+      #!/bin/sh
+      printf 'ARGV:%s\\n' "$*" >> "#{docker_trace}"
+
+      case "$*" in
+        inspect*"symphony-mt-cua-sup"*)
+          printf '%s\\n' 'true'
+          ;;
+        port*"22/tcp"*)
+          printf '%s\\n' '127.0.0.1:22124'
+          ;;
+        port*"5901/tcp"*)
+          printf '%s\\n' '127.0.0.1:16124'
+          ;;
+        port*"6901/tcp"*)
+          printf '%s\\n' '127.0.0.1:17124'
+          ;;
+        port*"8000/tcp"*)
+          printf '%s\\n' '127.0.0.1:18124'
+          ;;
+        *)
+          echo "unexpected docker call: $*" >&2
+          exit 2
+          ;;
+      esac
+      """)
+
+      File.write!(Path.join(fake_bin_dir, "ssh"), """
+      #!/bin/sh
+      printf 'ARGV:%s\\n' "$*" >> "#{ssh_trace}"
+
+      case "$*" in
+        *"__SYMPHONY_WORKSPACE__"*)
+          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{sandbox_workspace}'
+          ;;
+        *)
+          echo "unexpected ssh call: $*" >&2
+          exit 2
+          ;;
+      esac
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-cua-supervision.trace}"
+      printf 'RUN:%s\\n' "$$" >> "$trace_file"
+      turn_count=0
+
+      while IFS= read -r line; do
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$line" in
+          *'"method":"initialize"'*)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          *'"method":"thread/start"'*)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-cua-supervision"}}}'
+            ;;
+          *'"method":"turn/start"'*)
+            turn_count=$((turn_count + 1))
+            printf '{"id":3,"result":{"turn":{"id":"turn-cua-supervision-%s"}}}\\n' "$turn_count"
+
+            if [ "$turn_count" -eq 1 ]; then
+              printf '%s\\n' 'Failed to write file /tmp/symphony_cua_agent_workspaces/MT-CUA-SUP/services/example.txt' >&2
+            fi
+
+            printf '{"method":"turn/completed","params":{"turn":{"id":"turn-cua-supervision-%s","status":"completed"}}}\\n' "$turn_count"
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(Path.join(fake_bin_dir, "docker"), 0o755)
+      File.chmod!(Path.join(fake_bin_dir, "ssh"), 0o755)
+      File.chmod!(codex_binary, 0o755)
+
+      System.put_env("PATH", fake_bin_dir <> ":" <> (previous_path || ""))
+      System.put_env("SYMP_TEST_CODEx_TRACE", codex_trace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        worker_provider: "cua",
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        role_agents: ["generator"],
+        max_turns: 1,
+        prompt: "Reusable project workflow prompt."
+      )
+
+      issue = %Issue{
+        id: "issue-cua-supervision",
+        identifier: "MT-CUA-SUP",
+        title: "Supervise CUA workspace misuse",
+        description: "Keep CUA correction project-neutral",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-CUA-SUP",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      turn_texts =
+        codex_trace
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/start"))
+        |> Enum.map(fn payload ->
+          get_in(payload, ["params", "input"])
+          |> Enum.map_join("\n", &Map.get(&1, "text", ""))
+        end)
+
+      assert length(turn_texts) == 2
+      assert Enum.at(turn_texts, 0) =~ "Role: generator"
+      assert Enum.at(turn_texts, 1) =~ "Symphony supervisor correction:"
+      assert Enum.at(turn_texts, 1) =~ "The actual CUA sandbox workspace is:"
+      assert Enum.at(turn_texts, 1) =~ sandbox_workspace
+      assert Enum.at(turn_texts, 1) =~ "Do not use local shell commands, apply_patch, or direct local file writes"
+      assert Enum.at(turn_texts, 1) =~ "Do not ask the operator to unblock this"
+      refute Enum.at(turn_texts, 1) =~ "Biowork"
+      refute Enum.at(turn_texts, 1) =~ "Linear"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner surfaces ssh startup failures instead of silently hopping hosts" do
     test_root =
       Path.join(
@@ -1488,6 +2115,143 @@ defmodule SymphonyElixir.CoreTest do
       refute Enum.at(turn_texts, 1) =~ "You are an agent for this repository."
       assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner executes configured role agents in separate app-server sessions" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-role-agents-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-role-agents.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-role-agents.trace}"
+      printf 'RUN:%s\\n' "$$" >> "$trace_file"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-role"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-role"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        role_agents: ["planner", "generator", "evaluator"],
+        max_turns: 3
+      )
+
+      parent = self()
+
+      state_fetcher = fn [_issue_id] ->
+        attempt = Process.get(:agent_role_fetch_count, 0) + 1
+        Process.put(:agent_role_fetch_count, attempt)
+        send(parent, {:issue_state_fetch, attempt})
+
+        state =
+          if attempt < 3 do
+            "In Progress"
+          else
+            "Done"
+          end
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-role-agents",
+             identifier: "MT-ROLE",
+             title: "Use independent role agents",
+             description: "Planner, Generator, Evaluator must not share one session",
+             state: state
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-role-agents",
+        identifier: "MT-ROLE",
+        title: "Use independent role agents",
+        description: "Planner, Generator, Evaluator must not share one session",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-ROLE",
+        labels: []
+      }
+
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert_receive {:issue_state_fetch, 1}
+      assert_receive {:issue_state_fetch, 2}
+      assert_receive {:issue_state_fetch, 3}
+
+      lines = File.read!(trace_file) |> String.split("\n", trim: true)
+
+      assert length(Enum.filter(lines, &String.starts_with?(&1, "RUN:"))) == 3
+      assert length(Enum.filter(lines, &String.contains?(&1, "\"method\":\"thread/start\""))) == 3
+
+      turn_texts =
+        lines
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/start"))
+        |> Enum.map(fn payload ->
+          get_in(payload, ["params", "input"])
+          |> Enum.map_join("\n", &Map.get(&1, "text", ""))
+        end)
+
+      assert length(turn_texts) == 3
+      assert Enum.all?(turn_texts, &String.contains?(&1, "You may spawn bounded Codex subagents"))
+      assert Enum.all?(turn_texts, &String.contains?(&1, "Keep write ownership serialized"))
+      assert Enum.at(turn_texts, 0) =~ "Role: planner"
+      assert Enum.at(turn_texts, 0) =~ "Planner responsibilities:"
+      assert Enum.at(turn_texts, 0) =~ "For Large or cross-boundary issues"
+      assert Enum.at(turn_texts, 1) =~ "Role: generator"
+      assert Enum.at(turn_texts, 1) =~ "Generator responsibilities:"
+      assert Enum.at(turn_texts, 1) =~ "Use subagents only for bounded investigation"
+      assert Enum.at(turn_texts, 2) =~ "Role: evaluator"
+      assert Enum.at(turn_texts, 2) =~ "Evaluator responsibilities:"
+      assert Enum.at(turn_texts, 2) =~ "use focused review subagents"
+      assert Enum.all?(turn_texts, &String.contains?(&1, "You are an agent for this repository."))
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)

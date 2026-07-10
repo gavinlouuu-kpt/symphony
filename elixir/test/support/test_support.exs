@@ -129,7 +129,9 @@ defmodule SymphonyElixir.TestSupport do
           max_concurrent_agents: 10,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
+          unroute_grace_ms: 300_000,
           max_concurrent_agents_by_state: %{},
+          role_agents: [],
           codex_command: "codex app-server",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
@@ -142,9 +144,38 @@ defmodule SymphonyElixir.TestSupport do
           hook_after_run: nil,
           hook_before_remove: nil,
           hook_timeout_ms: 60_000,
+          sandbox_contract_enforced: false,
+          sandbox_contract_audited: false,
+          sandbox_contract_required_commands: [],
+          sandbox_contract_required_python_modules: [],
+          sandbox_contract_required_system_packages: [],
+          sandbox_contract_bootstrap_check: nil,
+          sandbox_contract_notes: nil,
+          evidence_contract_enforced: false,
+          evidence_contract_audited: false,
+          evidence_contract_required_checks: [],
+          evidence_contract_required_artifacts: [],
+          evidence_contract_required_commands: [],
+          evidence_contract_notes: nil,
           observability_enabled: true,
           observability_refresh_ms: 1_000,
           observability_render_interval_ms: 16,
+          openclaw_enabled: false,
+          openclaw_command: "openclaw",
+          openclaw_channel: "discord",
+          openclaw_account: nil,
+          openclaw_target: nil,
+          openclaw_timeout_ms: 10_000,
+          openclaw_intake_enabled: false,
+          openclaw_intake_token: nil,
+          openclaw_intake_labels: [],
+          openclaw_events: [
+            "dispatch_started",
+            "role_agent_completed",
+            "agent_completed",
+            "issue_blocked",
+            "retry_scheduled"
+          ],
           server_port: nil,
           server_host: nil,
           prompt: @workflow_prompt
@@ -189,7 +220,9 @@ defmodule SymphonyElixir.TestSupport do
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
+    unroute_grace_ms = Keyword.get(config, :unroute_grace_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
+    role_agents = Keyword.get(config, :role_agents)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
@@ -202,9 +235,32 @@ defmodule SymphonyElixir.TestSupport do
     hook_after_run = Keyword.get(config, :hook_after_run)
     hook_before_remove = Keyword.get(config, :hook_before_remove)
     hook_timeout_ms = Keyword.get(config, :hook_timeout_ms)
+    sandbox_contract_enforced = Keyword.get(config, :sandbox_contract_enforced)
+    sandbox_contract_audited = Keyword.get(config, :sandbox_contract_audited)
+    sandbox_contract_required_commands = Keyword.get(config, :sandbox_contract_required_commands)
+    sandbox_contract_required_python_modules = Keyword.get(config, :sandbox_contract_required_python_modules)
+    sandbox_contract_required_system_packages = Keyword.get(config, :sandbox_contract_required_system_packages)
+    sandbox_contract_bootstrap_check = Keyword.get(config, :sandbox_contract_bootstrap_check)
+    sandbox_contract_notes = Keyword.get(config, :sandbox_contract_notes)
+    evidence_contract_enforced = Keyword.get(config, :evidence_contract_enforced)
+    evidence_contract_audited = Keyword.get(config, :evidence_contract_audited)
+    evidence_contract_required_checks = Keyword.get(config, :evidence_contract_required_checks)
+    evidence_contract_required_artifacts = Keyword.get(config, :evidence_contract_required_artifacts)
+    evidence_contract_required_commands = Keyword.get(config, :evidence_contract_required_commands)
+    evidence_contract_notes = Keyword.get(config, :evidence_contract_notes)
     observability_enabled = Keyword.get(config, :observability_enabled)
     observability_refresh_ms = Keyword.get(config, :observability_refresh_ms)
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
+    openclaw_enabled = Keyword.get(config, :openclaw_enabled)
+    openclaw_command = Keyword.get(config, :openclaw_command)
+    openclaw_channel = Keyword.get(config, :openclaw_channel)
+    openclaw_account = Keyword.get(config, :openclaw_account)
+    openclaw_target = Keyword.get(config, :openclaw_target)
+    openclaw_timeout_ms = Keyword.get(config, :openclaw_timeout_ms)
+    openclaw_intake_enabled = Keyword.get(config, :openclaw_intake_enabled)
+    openclaw_intake_token = Keyword.get(config, :openclaw_intake_token)
+    openclaw_intake_labels = Keyword.get(config, :openclaw_intake_labels)
+    openclaw_events = Keyword.get(config, :openclaw_events)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
     prompt = Keyword.get(config, :prompt)
@@ -252,7 +308,9 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
+        "  unroute_grace_ms: #{yaml_value(unroute_grace_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
+        "  role_agents: #{yaml_value(role_agents)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",
@@ -262,7 +320,36 @@ defmodule SymphonyElixir.TestSupport do
         "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
+        sandbox_contract_yaml(%{
+          enforced: sandbox_contract_enforced,
+          audited: sandbox_contract_audited,
+          required_commands: sandbox_contract_required_commands,
+          required_python_modules: sandbox_contract_required_python_modules,
+          required_system_packages: sandbox_contract_required_system_packages,
+          bootstrap_check: sandbox_contract_bootstrap_check,
+          notes: sandbox_contract_notes
+        }),
+        evidence_contract_yaml(%{
+          enforced: evidence_contract_enforced,
+          audited: evidence_contract_audited,
+          required_checks: evidence_contract_required_checks,
+          required_artifacts: evidence_contract_required_artifacts,
+          required_commands: evidence_contract_required_commands,
+          notes: evidence_contract_notes
+        }),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
+        openclaw_yaml(%{
+          enabled: openclaw_enabled,
+          command: openclaw_command,
+          channel: openclaw_channel,
+          account: openclaw_account,
+          target: openclaw_target,
+          timeout_ms: openclaw_timeout_ms,
+          intake_enabled: openclaw_intake_enabled,
+          intake_token: openclaw_intake_token,
+          intake_labels: openclaw_intake_labels,
+          events: openclaw_events
+        }),
         server_yaml(server_port, server_host),
         "---",
         prompt
@@ -304,6 +391,35 @@ defmodule SymphonyElixir.TestSupport do
       hook_entry("before_run", hook_before_run),
       hook_entry("after_run", hook_after_run),
       hook_entry("before_remove", hook_before_remove)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp sandbox_contract_yaml(contract) do
+    [
+      "sandbox_contract:",
+      "  enforced: #{yaml_value(contract.enforced)}",
+      "  audited: #{yaml_value(contract.audited)}",
+      "  required_commands: #{yaml_value(contract.required_commands)}",
+      "  required_python_modules: #{yaml_value(contract.required_python_modules)}",
+      "  required_system_packages: #{yaml_value(contract.required_system_packages)}",
+      block_entry("bootstrap_check", contract.bootstrap_check),
+      block_entry("notes", contract.notes)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp evidence_contract_yaml(contract) do
+    [
+      "evidence_contract:",
+      "  enforced: #{yaml_value(contract.enforced)}",
+      "  audited: #{yaml_value(contract.audited)}",
+      "  required_checks: #{yaml_value(contract.required_checks)}",
+      "  required_artifacts: #{yaml_value(contract.required_artifacts)}",
+      "  required_commands: #{yaml_value(contract.required_commands)}",
+      block_entry("notes", contract.notes)
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
@@ -410,6 +526,46 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.join("\n")
   end
 
+  defp openclaw_yaml(%{
+         enabled: false,
+         command: "openclaw",
+         channel: "discord",
+         account: nil,
+         target: nil,
+         timeout_ms: 10_000,
+         intake_enabled: false,
+         intake_token: nil,
+         intake_labels: intake_labels,
+         events: events
+       })
+       when intake_labels in [nil, []] and
+              events == [
+                "dispatch_started",
+                "role_agent_completed",
+                "agent_completed",
+                "issue_blocked",
+                "retry_scheduled"
+              ],
+       do: nil
+
+  defp openclaw_yaml(openclaw) do
+    [
+      "openclaw:",
+      "  enabled: #{yaml_value(openclaw.enabled)}",
+      "  command: #{yaml_value(openclaw.command)}",
+      "  channel: #{yaml_value(openclaw.channel)}",
+      openclaw.account && "  account: #{yaml_value(openclaw.account)}",
+      "  target: #{yaml_value(openclaw.target)}",
+      "  timeout_ms: #{yaml_value(openclaw.timeout_ms)}",
+      "  intake_enabled: #{yaml_value(openclaw.intake_enabled)}",
+      "  intake_token: #{yaml_value(openclaw.intake_token)}",
+      "  intake_labels: #{yaml_value(openclaw.intake_labels)}",
+      "  events: #{yaml_value(openclaw.events)}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
   defp server_yaml(nil, nil), do: nil
 
   defp server_yaml(port, host) do
@@ -425,6 +581,12 @@ defmodule SymphonyElixir.TestSupport do
   defp hook_entry(_name, nil), do: nil
 
   defp hook_entry(name, command) when is_binary(command) do
+    block_entry(name, command)
+  end
+
+  defp block_entry(_name, nil), do: nil
+
+  defp block_entry(name, command) when is_binary(command) do
     indented =
       command
       |> String.split("\n")

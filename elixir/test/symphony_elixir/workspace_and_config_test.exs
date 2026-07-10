@@ -40,6 +40,87 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace runs enforced sandbox contract check after bootstrap" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-sandbox-contract-check-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "echo bootstrapped > bootstrapped.txt",
+        sandbox_contract_enforced: true,
+        sandbox_contract_audited: true,
+        sandbox_contract_required_commands: ["sh"],
+        sandbox_contract_bootstrap_check: "test -f bootstrapped.txt && echo contract-ok > contract.txt"
+      )
+
+      assert {:ok, workspace} = Workspace.create_for_issue("S-CONTRACT")
+      assert File.read!(Path.join(workspace, "contract.txt")) == "contract-ok\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace surfaces enforced sandbox contract check failures" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-sandbox-contract-failure-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        sandbox_contract_enforced: true,
+        sandbox_contract_audited: true,
+        sandbox_contract_required_commands: ["missing-tool"],
+        sandbox_contract_bootstrap_check: "echo missing sandbox dependency && exit 19"
+      )
+
+      assert {:error, {:workspace_hook_failed, "sandbox_contract", 19, output}} =
+               Workspace.create_for_issue("S-CONTRACT-FAIL")
+
+      assert output =~ "missing sandbox dependency"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "config accepts audited evidence contract requirements" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      evidence_contract_enforced: true,
+      evidence_contract_audited: true,
+      evidence_contract_required_checks: ["caller-network /predict succeeds"],
+      evidence_contract_required_artifacts: ["real Label Studio screenshot"],
+      evidence_contract_required_commands: ["curl /predict", "docker exec nvidia-smi"]
+    )
+
+    assert {:ok, settings} = Config.settings()
+    assert settings.evidence_contract.enforced == true
+    assert settings.evidence_contract.audited == true
+    assert settings.evidence_contract.required_checks == ["caller-network /predict succeeds"]
+    assert settings.evidence_contract.required_artifacts == ["real Label Studio screenshot"]
+    assert settings.evidence_contract.required_commands == ["curl /predict", "docker exec nvidia-smi"]
+  end
+
+  test "config rejects enforced evidence contract without audited requirements" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      evidence_contract_enforced: true,
+      evidence_contract_audited: false
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "audited"
+    assert message =~ "must declare at least one evidence requirement"
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(
@@ -801,6 +882,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.worker.max_concurrent_agents_per_host == nil
     assert config.agent.max_concurrent_agents == 10
     assert config.codex.command == "codex app-server"
+    refute config.sandbox_contract.enforced
+    refute config.sandbox_contract.audited
+    assert config.sandbox_contract.required_commands == []
 
     assert config.codex.approval_policy == %{
              "reject" => %{
@@ -900,6 +984,30 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert message =~ "codex.stall_timeout_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(),
+      sandbox_contract_enforced: true,
+      sandbox_contract_audited: false,
+      sandbox_contract_required_commands: [],
+      sandbox_contract_bootstrap_check: ""
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "sandbox_contract.audited"
+    assert message =~ "sandbox_contract.bootstrap_check"
+    assert message =~ "sandbox_contract.required_commands"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      sandbox_contract_enforced: true,
+      sandbox_contract_audited: true,
+      sandbox_contract_required_commands: [" sh ", "sh"],
+      sandbox_contract_required_python_modules: [" PySide6 ", ""],
+      sandbox_contract_bootstrap_check: "command -v sh"
+    )
+
+    assert :ok = Config.validate!()
+    assert Config.settings!().sandbox_contract.required_commands == ["sh"]
+    assert Config.settings!().sandbox_contract.required_python_modules == ["PySide6"]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: %{todo: true},
       tracker_terminal_states: %{done: true},
       poll_interval_ms: %{bad: true},
@@ -950,6 +1058,51 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server")
     assert Config.settings!().codex.command == "codex app-server"
+  end
+
+  test "config supports github tracker settings" do
+    previous_github_token = System.get_env("GITHUB_TOKEN")
+    previous_gh_token = System.get_env("GH_TOKEN")
+
+    on_exit(fn ->
+      restore_env("GITHUB_TOKEN", previous_github_token)
+      restore_env("GH_TOKEN", previous_gh_token)
+    end)
+
+    System.delete_env("GITHUB_TOKEN")
+    System.put_env("GH_TOKEN", "fallback-github-token")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: nil,
+      tracker_project_slug: "owner/repo",
+      tracker_active_states: ["open"],
+      tracker_terminal_states: ["closed"]
+    )
+
+    config = Config.settings!()
+    assert config.tracker.kind == "github"
+    assert config.tracker.endpoint == "https://api.github.com"
+    assert config.tracker.api_key == "fallback-github-token"
+    assert config.tracker.project_slug == "owner/repo"
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: "token",
+      tracker_project_slug: nil
+    )
+
+    assert {:error, :missing_github_repository} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: nil,
+      tracker_project_slug: "owner/repo"
+    )
+
+    System.delete_env("GH_TOKEN")
+    assert {:error, :missing_github_api_token} = Config.validate!()
   end
 
   test "config resolves $VAR references for env-backed secret and path values" do

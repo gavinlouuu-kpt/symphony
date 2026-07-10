@@ -21,7 +21,8 @@ defmodule SymphonyElixir.Workspace do
       with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
            {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
-           :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
+           :ok <- run_after_create_or_discard(workspace, issue_context, created?, worker_host),
+           :ok <- run_contract_check_or_discard(workspace, issue_context, worker_host) do
         {:ok, workspace}
       end
     rescue
@@ -82,6 +83,74 @@ defmodule SymphonyElixir.Workspace do
     File.rm_rf!(workspace)
     File.mkdir_p!(workspace)
     {:ok, workspace, true}
+  end
+
+  # A failed after_create hook (e.g. transient clone failure) must not leave a
+  # half-initialized workspace behind: later attempts would see the directory,
+  # skip the hook, and fail every subsequent run.
+  defp run_after_create_or_discard(workspace, issue_context, created?, worker_host) do
+    case maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        if created? do
+          Logger.warning("Discarding freshly created workspace after failed after_create hook #{issue_log_context(issue_context)} workspace=#{workspace}")
+
+          discard_workspace(workspace, worker_host)
+        end
+
+        {:error, reason}
+    end
+  end
+
+  defp run_contract_check_or_discard(workspace, issue_context, worker_host) do
+    case maybe_run_sandbox_contract_check(workspace, issue_context, worker_host) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        unless workspace_has_repo?(workspace, worker_host) do
+          Logger.warning("Discarding repo-less workspace after failed sandbox contract check #{issue_log_context(issue_context)} workspace=#{workspace}")
+
+          discard_workspace(workspace, worker_host)
+        end
+
+        {:error, reason}
+    end
+  end
+
+  defp discard_workspace(workspace, nil) do
+    File.rm_rf(workspace)
+    :ok
+  end
+
+  defp discard_workspace(workspace, worker_host) when is_binary(worker_host) do
+    script =
+      [
+        remote_shell_assign("workspace", workspace),
+        "rm -rf \"$workspace\""
+      ]
+      |> Enum.join("\n")
+
+    run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms)
+    :ok
+  end
+
+  defp workspace_has_repo?(workspace, nil), do: File.dir?(Path.join(workspace, ".git"))
+
+  defp workspace_has_repo?(workspace, worker_host) when is_binary(worker_host) do
+    script =
+      [
+        remote_shell_assign("workspace", workspace),
+        "[ -d \"$workspace/.git\" ]"
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} -> true
+      _ -> false
+    end
   end
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
@@ -222,6 +291,22 @@ defmodule SymphonyElixir.Workspace do
 
       false ->
         :ok
+    end
+  end
+
+  defp maybe_run_sandbox_contract_check(workspace, issue_context, worker_host) do
+    contract = Config.settings!().sandbox_contract
+    bootstrap_check = contract.bootstrap_check
+
+    cond do
+      contract.enforced != true ->
+        :ok
+
+      not is_binary(bootstrap_check) or String.trim(bootstrap_check) == "" ->
+        {:error, :sandbox_contract_bootstrap_check_missing}
+
+      true ->
+        run_hook(bootstrap_check, workspace, issue_context, "sandbox_contract", worker_host)
     end
   end
 
