@@ -30,8 +30,8 @@ Options:
   --instance-id <name>    Instance name (default: repo name, lowercased)
   --port <port>           Dashboard/API port (default: next free port from 4404)
   --branch <branch>       Source branch (default: repository default branch)
-  --model <model>         Codex model (default: gpt-5.4-mini)
-  --effort <level>        Codex reasoning effort (default: medium)
+  --model <model>         Codex model (default: gpt-5.5)
+  --effort <level>        Codex reasoning effort (default: high)
   --host <ip>             Host/IP for dashboard + intake URL (default: from defaults file)
   --no-start              Provision everything but do not start the service
   -h, --help              Show this help
@@ -52,8 +52,8 @@ DISCORD_CHANNEL=""
 INSTANCE_ID=""
 PORT=""
 BRANCH=""
-MODEL="gpt-5.4-mini"
-EFFORT="medium"
+MODEL="gpt-5.5"
+EFFORT="high"
 HOST_OVERRIDE=""
 START_SERVICE=1
 

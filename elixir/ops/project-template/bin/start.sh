@@ -97,7 +97,7 @@ SYMPHONY_CUA_DOCKER_ARGS=${SYMPHONY_CUA_DOCKER_ARGS:-[]}
 # Default codex command strips tracker/bridge tokens from agent shells and
 # points gh at an empty config dir so host-side GitHub writes cannot bypass the
 # sandbox-tool handoff guards (the sandbox keeps its own injected token).
-SYMPHONY_CODEX_COMMAND=${SYMPHONY_CODEX_COMMAND:-'codex --config shell_environment_policy.inherit=all --config shell_environment_policy.exclude=[\"GH_TOKEN\",\"GITHUB_TOKEN\",\"LINEAR_API_KEY\",\"SYMPHONY_OPENCLAW_*\"] --config shell_environment_policy.set.GH_CONFIG_DIR=\"/tmp/symphony-no-host-gh\" --config model=\"gpt-5.5\" --config model_reasoning_effort=xhigh app-server'}
+SYMPHONY_CODEX_COMMAND=${SYMPHONY_CODEX_COMMAND:-'codex --config shell_environment_policy.inherit=all --config shell_environment_policy.exclude=[\"GH_TOKEN\",\"GITHUB_TOKEN\",\"LINEAR_API_KEY\",\"SYMPHONY_OPENCLAW_*\"] --config shell_environment_policy.set.GH_CONFIG_DIR=\"/tmp/symphony-no-host-gh\" --config model=\"gpt-5.5\" --config model_reasoning_effort=high app-server'}
 
 WORKFLOW_TEMPLATE=${SYMPHONY_WORKFLOW_TEMPLATE:-"$SYMPHONY_INSTANCE_ROOT/WORKFLOW.md.template"}
 RUNTIME_WORKFLOW=${SYMPHONY_RUNTIME_WORKFLOW:-"$SYMPHONY_RUNTIME_ROOT/WORKFLOW.runtime.md"}
