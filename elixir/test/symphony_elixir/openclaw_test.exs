@@ -4,6 +4,7 @@ defmodule SymphonyElixir.OpenClawTest do
   import Phoenix.ConnTest
   import Plug.Conn, only: [put_req_header: 3]
 
+  alias SymphonyElixir.Codex.DynamicTool
   alias SymphonyElixir.Config.Schema.OpenClaw
   alias SymphonyElixir.OpenClaw.Client, as: OpenClawClient
   alias SymphonyElixir.OpenClaw.Notifier, as: OpenClawNotifier
@@ -30,6 +31,14 @@ defmodule SymphonyElixir.OpenClawTest do
     def reply_to_thread(message, thread_ref, settings) do
       if recipient = Application.get_env(:symphony_elixir, :openclaw_test_recipient) do
         send(recipient, {:openclaw_thread_reply, message, thread_ref, settings})
+      end
+
+      :ok
+    end
+
+    def send_to_target(message, target, media_path, settings) do
+      if recipient = Application.get_env(:symphony_elixir, :openclaw_test_recipient) do
+        send(recipient, {:openclaw_target_send, message, target, media_path, settings})
       end
 
       :ok
@@ -79,6 +88,59 @@ defmodule SymphonyElixir.OpenClawTest do
     Application.put_env(:symphony_elixir, :openclaw_thread_registry_file, registry_file)
     OpenClawNotifier.reset_issue_threads_for_test()
     :ok
+  end
+
+  test "symphony_thread_post targets the issue thread and never the project channel" do
+    Application.put_env(:symphony_elixir, :openclaw_client_module, FakeOpenClawClient)
+    Application.put_env(:symphony_elixir, :openclaw_test_recipient, self())
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: "github-token",
+      tracker_project_slug: "owner/repo",
+      tracker_active_states: ["open"],
+      tracker_terminal_states: ["closed"],
+      openclaw_enabled: true,
+      openclaw_command: "openclaw",
+      openclaw_channel: "discord",
+      openclaw_target: "channel:parent-channel",
+      openclaw_events: ["dispatch_started"]
+    )
+
+    issue = %Issue{
+      id: "github:owner/repo#9",
+      identifier: "GH-9",
+      title: "Thread routing",
+      state: "open",
+      url: "https://github.com/owner/repo/issues/9"
+    }
+
+    OpenClawNotifier.publish(:dispatch_started, %{issue: issue, attempt: nil, worker_host: "h"})
+    assert_received {:openclaw_thread_created, _message, _name, _settings}
+
+    sandbox_context = %{
+      worker_host: "cua@127.0.0.1:22000",
+      workspace: "/home/cua/workspaces/GH-9",
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_url: issue.url
+    }
+
+    response =
+      DynamicTool.execute("symphony_thread_post", %{"message" => "plan ready"}, sandbox_context: sandbox_context)
+
+    assert response["success"] == true
+    assert_received {:openclaw_target_send, "plan ready", "channel:thread-123", nil, _settings}
+
+    # Unknown issue: the tool must fail instead of posting to the parent channel.
+    unknown_context = %{sandbox_context | issue_id: "github:owner/repo#404", issue_identifier: "GH-404", issue_url: "https://github.com/owner/repo/issues/404"}
+
+    response =
+      DynamicTool.execute("symphony_thread_post", %{"message" => "lost"}, sandbox_context: unknown_context)
+
+    assert response["success"] == false
+    refute_received {:openclaw_target_send, "lost", _target, _media, _settings}
+    refute_received {:openclaw_message, "lost", _settings}
   end
 
   test "config supports OpenClaw channel bridge settings" do

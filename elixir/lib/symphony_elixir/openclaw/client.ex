@@ -26,6 +26,33 @@ defmodule SymphonyElixir.OpenClaw.Client do
     end
   end
 
+  @doc """
+  Sends a message (optionally with a media attachment) to an explicit target,
+  bypassing the configured default target. Used for per-issue thread posts.
+  """
+  @spec send_to_target(String.t(), String.t(), String.t() | nil, settings()) ::
+          :ok | {:error, term()}
+  def send_to_target(message, target, media_path, settings)
+      when is_binary(message) and is_binary(target) do
+    with {:ok, executable, base_args} <- command_parts(settings.command),
+         {:ok, executable_path} <- executable_path(executable),
+         {:ok, channel} <- required_setting(settings.channel, :missing_openclaw_channel),
+         {:ok, target} <- required_setting(target, :missing_openclaw_thread_target) do
+      args =
+        base_args ++
+          ["message", "send", "--channel", channel] ++
+          optional_arg("--account", settings.account) ++
+          ["--target", target, "--message", message] ++
+          optional_arg("--media", media_path)
+
+      run_command(executable_path, args, media_timeout_ms(settings.timeout_ms, media_path))
+    end
+  end
+
+  defp media_timeout_ms(timeout_ms, nil), do: timeout_ms
+  # Media uploads are slower than text sends; give them extra headroom.
+  defp media_timeout_ms(timeout_ms, _media_path), do: max(timeout_ms, 60_000)
+
   @spec create_thread(String.t(), String.t(), settings()) :: {:ok, thread_ref()} | {:error, term()}
   def create_thread(message, thread_name, settings) when is_binary(message) and is_binary(thread_name) do
     with {:ok, executable, base_args} <- command_parts(settings.command),

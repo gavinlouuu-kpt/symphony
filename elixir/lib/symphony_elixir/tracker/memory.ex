@@ -47,6 +47,12 @@ defmodule SymphonyElixir.Tracker.Memory do
     :ok
   end
 
+  @spec add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def add_issue_labels(issue_id, labels) do
+    send_event({:memory_tracker_labels_added, issue_id, labels})
+    :ok
+  end
+
   defp configured_issues do
     Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
   end

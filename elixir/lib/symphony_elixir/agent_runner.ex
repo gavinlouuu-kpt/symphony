@@ -869,7 +869,10 @@ defmodule SymphonyElixir.AgentRunner do
             provider: "cua",
             name: Map.get(sandbox, :name),
             worker_host: worker_host,
-            workspace: workspace
+            workspace: workspace,
+            issue_id: issue_field(issue, :id),
+            issue_identifier: issue_field(issue, :identifier),
+            issue_url: issue_field(issue, :url)
           }
         }
       ],
@@ -897,12 +900,17 @@ defmodule SymphonyElixir.AgentRunner do
     Your local working directory is only a host-side control workspace. Do not use local shell commands or local file edits for issue work.
     When task instructions refer to the current working directory or workspace root, interpret that as the CUA sandbox workspace above.
     Use `sandbox_exec` for headless shell commands in the CUA workspace, `sandbox_visible_exec` for commands that must be visible through noVNC, `sandbox_read_file` to inspect sandbox files, `sandbox_write_file` to write sandbox files, and `symphony_record_evidence` to run required handoff validation commands that must count toward the project evidence contract.
+    When `symphony_thread_post` is available, post a concise status update to the issue's Discord thread at each role milestone (plan ready, implementation pushed, validation verdict), and attach visual evidence (screenshot/photo/short video saved under the sandbox workspace, e.g. `.symphony/artifacts/`) whenever the work is UI-facing or the issue asks for visual proof.
     When the issue asks for real-user testing, noVNC/demo evidence, browser/app validation, or visible desktop activity, you must use `sandbox_visible_exec` for the relevant app/test commands and document the transcript path under `.symphony/visible-exec`.
     When the workflow config has `agent.role_agents`, Symphony starts separate independent Planner, Generator, and Evaluator app-server sessions for the issue. Do not collapse those roles into one agent turn. Do not treat /review as a delegated sub-agent; it is a mode/manual review surface and does not satisfy the Evaluator agent. Keep all project commands inside the CUA sandbox tools.
     Use tracker-specific dynamic tools only when they are relevant to the configured workflow.
 
     """
   end
+
+  defp issue_field(%Issue{} = issue, key), do: Map.get(issue, key)
+  defp issue_field(%{} = issue, key), do: Map.get(issue, key) || Map.get(issue, Atom.to_string(key))
+  defp issue_field(_issue, _key), do: nil
 
   defp issue_identifier(%Issue{identifier: identifier, id: id}), do: identifier || id
   defp issue_identifier(%{identifier: identifier}), do: identifier

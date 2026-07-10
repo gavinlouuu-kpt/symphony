@@ -79,6 +79,16 @@ defmodule SymphonyElixir.Github.Client do
     end
   end
 
+  @spec add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def add_issue_labels(issue_id, labels) when is_binary(issue_id) and is_list(labels) do
+    with {:ok, repo} <- configured_repo(),
+         {:ok, number} <- parse_issue_number(issue_id),
+         {:ok, _body} <-
+           request(:post, issue_labels_url(repo, number), json: %{labels: labels}) do
+      :ok
+    end
+  end
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name)
       when is_binary(issue_id) and is_binary(state_name) do
@@ -171,6 +181,7 @@ defmodule SymphonyElixir.Github.Client do
   defp repo_issues_url(repo), do: "#{api_endpoint()}/repos/#{repo.owner}/#{repo.repo}/issues"
   defp issue_url(repo, number), do: "#{repo_issues_url(repo)}/#{number}"
   defp issue_comments_url(repo, number), do: "#{issue_url(repo, number)}/comments"
+  defp issue_labels_url(repo, number), do: "#{issue_url(repo, number)}/labels"
 
   defp api_endpoint do
     Config.settings!().tracker.endpoint || @default_endpoint

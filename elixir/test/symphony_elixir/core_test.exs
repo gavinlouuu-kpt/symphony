@@ -435,6 +435,309 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "unrouted running issue enters grace instead of stopping immediately" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unroute-grace-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-unroute-grace"
+    issue_identifier = "MT-560"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: test_root,
+        tracker_required_labels: ["openclaw-intake"],
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Closed"]
+      )
+
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "In Progress",
+        title: "Unrouted",
+        labels: ["symphony"]
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      assert %{unrouted_at: %DateTime{}} = Map.get(updated_state.running, issue_id)
+      assert MapSet.member?(updated_state.claimed, issue_id)
+      assert Process.alive?(agent_pid)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "unrouted running issue stops and cleans workspace after grace expiry" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unroute-expiry-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-unroute-expiry"
+    issue_identifier = "MT-561"
+    workspace = Path.join(test_root, issue_identifier)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: test_root,
+        tracker_required_labels: ["openclaw-intake"],
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Closed"]
+      )
+
+      File.mkdir_p!(workspace)
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            started_at: DateTime.utc_now(),
+            unrouted_at: DateTime.add(DateTime.utc_now(), -400, :second)
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "In Progress",
+        title: "Unrouted",
+        labels: ["symphony"]
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Process.alive?(agent_pid)
+      refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "premature handoff restores routing labels and keeps the agent running" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unroute-restore-#{System.unique_integer([:positive])}"
+      )
+
+    previous_checker = Application.get_env(:symphony_elixir, :handoff_evidence_checker)
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-unroute-restore"
+    issue_identifier = "MT-562"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_required_labels: ["openclaw-intake"],
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Closed"]
+      )
+
+      Application.put_env(:symphony_elixir, :handoff_evidence_checker, fn _sandbox ->
+        {:error, [%{"check" => "evaluator handoff evidence review"}]}
+      end)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            worker_host: "cua@127.0.0.1:22000",
+            workspace_path: "/home/cua/workspaces/#{issue_identifier}",
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "In Progress",
+        title: "Premature handoff",
+        labels: ["symphony"]
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      assert_received {:memory_tracker_labels_added, ^issue_id, ["openclaw-intake"]}
+      assert_received {:memory_tracker_comment, ^issue_id, comment}
+      assert comment =~ "openclaw-intake"
+      assert comment =~ "evaluator handoff evidence review"
+
+      running_entry = Map.get(updated_state.running, issue_id)
+      assert running_entry.routing_restore_count == 1
+      refute Map.has_key?(running_entry, :unrouted_at)
+      assert Process.alive?(agent_pid)
+    after
+      restore_app_env(:handoff_evidence_checker, previous_checker)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "second premature handoff drains instead of restoring again" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unroute-restore-once-#{System.unique_integer([:positive])}"
+      )
+
+    previous_checker = Application.get_env(:symphony_elixir, :handoff_evidence_checker)
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+    issue_id = "issue-unroute-restore-once"
+    issue_identifier = "MT-563"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_required_labels: ["openclaw-intake"],
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Closed"]
+      )
+
+      Application.put_env(:symphony_elixir, :handoff_evidence_checker, fn _sandbox ->
+        {:error, [%{"check" => "evaluator handoff evidence review"}]}
+      end)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            worker_host: "cua@127.0.0.1:22000",
+            workspace_path: "/home/cua/workspaces/#{issue_identifier}",
+            routing_restore_count: 1,
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "In Progress",
+        title: "Premature handoff again",
+        labels: ["symphony"]
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      refute_received {:memory_tracker_labels_added, ^issue_id, _labels}
+      assert %{unrouted_at: %DateTime{}} = Map.get(updated_state.running, issue_id)
+      assert Process.alive?(agent_pid)
+    after
+      restore_app_env(:handoff_evidence_checker, previous_checker)
+      restore_app_env(:memory_tracker_recipient, previous_recipient)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "issue routed again during grace clears the drain marker" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-unroute-rerouted-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-unroute-rerouted"
+    issue_identifier = "MT-564"
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: test_root,
+        tracker_required_labels: ["openclaw-intake"],
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Closed"]
+      )
+
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            unrouted_at: DateTime.utc_now(),
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "In Progress",
+        title: "Routed again",
+        labels: ["symphony", "openclaw-intake"]
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      running_entry = Map.get(updated_state.running, issue_id)
+      refute Map.has_key?(running_entry, :unrouted_at)
+      assert Process.alive?(agent_pid)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "reconcile updates running issue state for active issues" do
     issue_id = "issue-3"
 
@@ -475,6 +778,8 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "reconcile stops running issue when it is reassigned away from this worker" do
+    write_workflow_file!(Workflow.workflow_file_path(), unroute_grace_ms: 0)
+
     issue_id = "issue-reassigned"
 
     agent_pid =
@@ -522,7 +827,10 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "reconcile stops running issue when a required label is removed" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_required_labels: ["symphony"])
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_required_labels: ["symphony"],
+      unroute_grace_ms: 0
+    )
 
     issue_id = "issue-unlabeled"
 

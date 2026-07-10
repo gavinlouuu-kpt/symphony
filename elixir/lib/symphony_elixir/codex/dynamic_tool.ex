@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @sandbox_read_file_tool "sandbox_read_file"
   @sandbox_write_file_tool "sandbox_write_file"
   @evidence_tool "symphony_record_evidence"
+  @thread_post_tool "symphony_thread_post"
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
   """
@@ -28,6 +29,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   """
   @evidence_tool_description """
   Run a required validation command inside the CUA sandbox and record it in Symphony's evidence ledger for gated PR handoff.
+  """
+  @thread_post_tool_description """
+  Post a concise status update to this issue's Discord thread, optionally attaching one image/video/document from the sandbox workspace as visual evidence. Use at role milestones (plan ready, implementation done, validation verdict) and whenever the issue asks for visual proof.
   """
   @linear_graphql_input_schema %{
     "type" => "object",
@@ -123,6 +127,22 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   }
 
+  @thread_post_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["message"],
+    "properties" => %{
+      "message" => %{
+        "type" => "string",
+        "description" => "Short status update for the issue's Discord thread (plain text, keep under ~1500 chars)."
+      },
+      "media_path" => %{
+        "type" => ["string", "null"],
+        "description" => "Optional relative path (under the sandbox workspace) to an image/video/document to attach as visual evidence, e.g. .symphony/artifacts/screenshot.png."
+      }
+    }
+  }
+
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
     case tool do
@@ -144,6 +164,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       @evidence_tool ->
         execute_record_evidence(arguments, opts)
 
+      @thread_post_tool ->
+        execute_thread_post(arguments, opts)
+
       other ->
         failure_response(%{
           "error" => %{
@@ -153,6 +176,26 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         })
     end
   end
+
+  @doc """
+  Checks the configured handoff evidence contract against the sandbox evidence ledger.
+
+  Expects a sandbox context with `:worker_host` and `:workspace`. Returns `:ok` when the
+  contract is not enforced or satisfied, `{:error, missing}` with the unmet requirements
+  otherwise.
+  """
+  @spec handoff_evidence_status(map()) :: :ok | {:error, term()}
+  def handoff_evidence_status(%{worker_host: worker_host, workspace: workspace} = sandbox)
+      when is_binary(worker_host) and is_binary(workspace) do
+    settings = Config.settings!()
+
+    case settings.evidence_contract.enforced do
+      true -> evidence_contract_satisfied?(settings.evidence_contract, sandbox)
+      _ -> :ok
+    end
+  end
+
+  def handoff_evidence_status(_sandbox), do: {:error, :missing_sandbox_context}
 
   @spec tool_specs() :: [map()]
   @spec tool_specs(keyword()) :: [map()]
@@ -193,10 +236,30 @@ defmodule SymphonyElixir.Codex.DynamicTool do
             "description" => @evidence_tool_description,
             "inputSchema" => @evidence_tool_input_schema
           }
-        ]
+        ] ++ thread_post_specs()
     else
       base_specs
     end
+  end
+
+  defp thread_post_specs do
+    if openclaw_outbound_enabled?() do
+      [
+        %{
+          "name" => @thread_post_tool,
+          "description" => @thread_post_tool_description,
+          "inputSchema" => @thread_post_input_schema
+        }
+      ]
+    else
+      []
+    end
+  end
+
+  defp openclaw_outbound_enabled? do
+    Config.settings!().openclaw.enabled == true
+  rescue
+    _error -> false
   end
 
   defp execute_linear_graphql(arguments, opts) do
@@ -302,6 +365,146 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
     end
+  end
+
+  defp execute_thread_post(arguments, opts) do
+    with {:ok, sandbox} <- sandbox_context(opts),
+         {:ok, message} <- normalize_thread_post_message(arguments),
+         {:ok, target} <- resolve_thread_post_target(sandbox),
+         {:ok, media_file, cleanup} <- fetch_thread_post_media(sandbox, arguments),
+         :ok <- deliver_thread_post(message, target, media_file, cleanup) do
+      dynamic_tool_response(
+        true,
+        encode_payload(%{
+          "target" => target,
+          "media_attached" => is_binary(media_file)
+        })
+      )
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp normalize_thread_post_message(arguments) when is_map(arguments) do
+    case Map.get(arguments, "message") || Map.get(arguments, :message) do
+      message when is_binary(message) ->
+        case String.trim(message) do
+          "" -> {:error, :missing_thread_post_message}
+          trimmed -> {:ok, String.slice(trimmed, 0, 1_800)}
+        end
+
+      _ ->
+        {:error, :missing_thread_post_message}
+    end
+  end
+
+  defp normalize_thread_post_message(_arguments), do: {:error, :missing_thread_post_message}
+
+  # Never fall back to the project channel: status belongs in the issue thread,
+  # and posting to the parent when the thread is briefly unknown floods it.
+  defp resolve_thread_post_target(sandbox) do
+    thread_ref =
+      SymphonyElixir.OpenClaw.Notifier.issue_thread_ref(%{
+        issue_id: Map.get(sandbox, :issue_id),
+        identifier: Map.get(sandbox, :issue_identifier),
+        issue_url: Map.get(sandbox, :issue_url)
+      })
+
+    case thread_ref do
+      %{target: target} when is_binary(target) and target != "" ->
+        {:ok, target}
+
+      _ ->
+        {:error, :missing_openclaw_thread_target}
+    end
+  end
+
+  # Discord caps ordinary uploads; keep a conservative limit.
+  @thread_post_max_media_bytes 8_000_000
+
+  defp fetch_thread_post_media(sandbox, arguments) do
+    case Map.get(arguments, "media_path") || Map.get(arguments, :media_path) do
+      nil ->
+        {:ok, nil, fn -> :ok end}
+
+      "" ->
+        {:ok, nil, fn -> :ok end}
+
+      path when is_binary(path) ->
+        with {:ok, safe_path} <- validate_relative_path(path),
+             {:ok, {encoded, 0}} <-
+               SSH.run(
+                 sandbox.worker_host,
+                 sandbox_file_script(sandbox.workspace, safe_path, "base64 < \"$target\""),
+                 stderr_to_stdout: true
+               ),
+             {:ok, binary} <- decode_thread_post_media(encoded) do
+          write_thread_post_media(binary, Path.basename(safe_path))
+        else
+          {:ok, {output, _status}} ->
+            {:error, {:thread_post_media_unreadable, output |> to_string() |> String.slice(0, 2_000)}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      _ ->
+        {:error, :invalid_thread_post_media_path}
+    end
+  end
+
+  defp decode_thread_post_media(encoded) do
+    case Base.decode64(String.replace(encoded, ~r/\s+/, "")) do
+      {:ok, binary} when byte_size(binary) == 0 ->
+        {:error, :thread_post_media_empty}
+
+      {:ok, binary} when byte_size(binary) > @thread_post_max_media_bytes ->
+        {:error, {:thread_post_media_too_large, byte_size(binary), @thread_post_max_media_bytes}}
+
+      {:ok, binary} ->
+        {:ok, binary}
+
+      :error ->
+        {:error, :thread_post_media_unreadable}
+    end
+  end
+
+  defp write_thread_post_media(binary, basename) do
+    dir = Path.join(System.tmp_dir!(), "symphony_thread_media")
+    File.mkdir_p!(dir)
+    file = Path.join(dir, "#{System.unique_integer([:positive])}-#{basename}")
+
+    case File.write(file, binary) do
+      :ok -> {:ok, file, fn -> File.rm(file) end}
+      {:error, reason} -> {:error, {:thread_post_media_write_failed, reason}}
+    end
+  end
+
+  defp deliver_thread_post(message, target, media_file, cleanup) do
+    settings = Config.settings!().openclaw
+    client = openclaw_client_module()
+
+    cond do
+      settings.enabled != true ->
+        cleanup.()
+        {:error, :openclaw_disabled}
+
+      not (Code.ensure_loaded?(client) and function_exported?(client, :send_to_target, 4)) ->
+        cleanup.()
+        {:error, {:openclaw_client_missing_send_to_target, client}}
+
+      true ->
+        try do
+          client.send_to_target(message, target, media_file, settings)
+        after
+          cleanup.()
+        end
+    end
+  end
+
+  defp openclaw_client_module do
+    Application.get_env(:symphony_elixir, :openclaw_client_module, SymphonyElixir.OpenClaw.Client)
   end
 
   defp execute_sandbox_read_file(arguments, opts) do
@@ -740,6 +943,39 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
+  defp tool_error_payload(:missing_thread_post_message) do
+    %{
+      "error" => %{
+        "message" => "`symphony_thread_post.message` must be a non-empty string."
+      }
+    }
+  end
+
+  defp tool_error_payload(:missing_openclaw_thread_target) do
+    %{
+      "error" => %{
+        "message" => "No Discord thread is registered for this issue yet. Do not post to the project channel; continue working and retry this tool at the next milestone."
+      }
+    }
+  end
+
+  defp tool_error_payload({:thread_post_media_too_large, size, max}) do
+    %{
+      "error" => %{
+        "message" => "Media file is #{size} bytes; the limit is #{max} bytes. Downscale or crop the evidence file."
+      }
+    }
+  end
+
+  defp tool_error_payload({:thread_post_media_unreadable, output}) do
+    %{
+      "error" => %{
+        "message" => "Could not read the media file from the sandbox workspace.",
+        "output" => output
+      }
+    }
+  end
+
   defp tool_error_payload(reason) do
     %{
       "error" => %{
@@ -755,17 +991,29 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     |> normalize_sandbox_context()
   end
 
-  defp normalize_sandbox_context(%{worker_host: worker_host, workspace: workspace})
+  defp normalize_sandbox_context(%{worker_host: worker_host, workspace: workspace} = context)
        when is_binary(worker_host) and is_binary(workspace) do
-    {:ok, %{worker_host: worker_host, workspace: workspace}}
+    {:ok, put_sandbox_issue_fields(%{worker_host: worker_host, workspace: workspace}, context)}
   end
 
-  defp normalize_sandbox_context(%{"worker_host" => worker_host, "workspace" => workspace})
+  defp normalize_sandbox_context(%{"worker_host" => worker_host, "workspace" => workspace} = context)
        when is_binary(worker_host) and is_binary(workspace) do
-    {:ok, %{worker_host: worker_host, workspace: workspace}}
+    {:ok, put_sandbox_issue_fields(%{worker_host: worker_host, workspace: workspace}, context)}
   end
 
   defp normalize_sandbox_context(_context), do: {:error, :missing_sandbox_context}
+
+  # Issue identity rides along so tools like symphony_thread_post can resolve
+  # the issue's Discord thread.
+  defp put_sandbox_issue_fields(sandbox, context) do
+    [:issue_id, :issue_identifier, :issue_url]
+    |> Enum.reduce(sandbox, fn key, acc ->
+      case Map.get(context, key) || Map.get(context, Atom.to_string(key)) do
+        value when is_binary(value) and value != "" -> Map.put(acc, key, value)
+        _ -> acc
+      end
+    end)
+  end
 
   defp sandbox_context?(context) do
     match?({:ok, _}, normalize_sandbox_context(context))

@@ -22,6 +22,9 @@ defmodule SymphonyElixir.Github.Adapter do
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name), do: client_module().update_issue_state(issue_id, state_name)
 
+  @spec add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def add_issue_labels(issue_id, labels), do: client_module().add_issue_labels(issue_id, labels)
+
   defp client_module do
     Application.get_env(:symphony_elixir, :github_client_module, Client)
   end

@@ -27,6 +27,16 @@ defmodule SymphonyElixir.OpenClaw.Notifier do
 
   def publish(_event, _payload), do: :ok
 
+  @doc """
+  Returns the stored Discord thread reference for an issue, or nil when no
+  thread has been created yet. Accepts any payload shape `issue_thread_keys/1`
+  understands (issue struct, issue_id, identifier, issue_url).
+  """
+  @spec issue_thread_ref(map()) :: map() | nil
+  def issue_thread_ref(payload) when is_map(payload) do
+    lookup_issue_thread(payload)
+  end
+
   @doc false
   def reset_issue_threads_for_test do
     case :ets.whereis(@thread_registry) do
@@ -111,7 +121,7 @@ defmodule SymphonyElixir.OpenClaw.Notifier do
   end
 
   defp create_dispatch_thread(client, payload, message, settings) do
-    if function_exported?(client, :create_thread, 3) do
+    if client_exports?(client, :create_thread, 3) do
       thread_name = issue_thread_name(payload)
 
       case client.create_thread(message, thread_name, settings) do
@@ -144,7 +154,7 @@ defmodule SymphonyElixir.OpenClaw.Notifier do
   defp deliver_thread_reply(message, thread_ref, settings) do
     client = client_module()
 
-    if function_exported?(client, :reply_to_thread, 3) do
+    if client_exports?(client, :reply_to_thread, 3) do
       case client.reply_to_thread(message, thread_ref, settings) do
         :ok ->
           :ok
@@ -160,6 +170,13 @@ defmodule SymphonyElixir.OpenClaw.Notifier do
     else
       deliver_channel(message, settings)
     end
+  end
+
+  # In escripts modules load lazily; function_exported?/3 does not trigger a
+  # load, so the first notification after boot would silently skip thread
+  # support and post to the parent channel.
+  defp client_exports?(client, function, arity) do
+    Code.ensure_loaded?(client) and function_exported?(client, function, arity)
   end
 
   defp deliver_channel(message, settings) do
@@ -441,6 +458,51 @@ defmodule SymphonyElixir.OpenClaw.Notifier do
         field_line("Session", Map.get(payload, :session_id)),
         field_line("noVNC", sandbox_value(Map.get(payload, :sandbox), :novnc_url)),
         field_line("API", sandbox_value(Map.get(payload, :sandbox), :api_url))
+      ]
+      |> compact_lines()
+
+    {:ok, truncate_message(message)}
+  end
+
+  defp format_message(:routing_label_restored, payload) do
+    issue = Map.get(payload, :issue)
+
+    message =
+      [
+        "Symphony restored routing label",
+        issue_line(issue) || field_line("Issue", Map.get(payload, :identifier) || Map.get(payload, :issue_id)),
+        title_line(issue),
+        url_line(issue),
+        field_line("Labels", Enum.join(List.wrap(Map.get(payload, :labels)), ", ")),
+        field_line("Missing evidence", Map.get(payload, :missing_evidence)),
+        field_line("Worker", Map.get(payload, :worker_host) || "local"),
+        "The routing label was removed before the handoff evidence contract was satisfied.",
+        "The agent run continues; complete the evidence contract before removing the label."
+      ]
+      |> compact_lines()
+
+    {:ok, truncate_message(message)}
+  end
+
+  defp format_message(:issue_unrouted, payload) do
+    issue = Map.get(payload, :issue)
+
+    status =
+      case Map.get(payload, :phase) do
+        :draining -> "Agent stops in #{delay_label(Map.get(payload, :grace_ms))} unless routing is restored."
+        :stopped -> "Agent stopped and its workspace/sandbox were cleaned up."
+        _ -> nil
+      end
+
+    message =
+      [
+        "Symphony issue unrouted",
+        issue_line(issue) || field_line("Issue", Map.get(payload, :identifier) || Map.get(payload, :issue_id)),
+        title_line(issue),
+        url_line(issue),
+        field_line("Worker", Map.get(payload, :worker_host) || "local"),
+        "The issue lost its required routing label(s) while an agent was running.",
+        status
       ]
       |> compact_lines()
 

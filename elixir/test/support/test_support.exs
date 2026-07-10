@@ -129,6 +129,7 @@ defmodule SymphonyElixir.TestSupport do
           max_concurrent_agents: 10,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
+          unroute_grace_ms: 300_000,
           max_concurrent_agents_by_state: %{},
           role_agents: [],
           codex_command: "codex app-server",
@@ -219,6 +220,7 @@ defmodule SymphonyElixir.TestSupport do
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
+    unroute_grace_ms = Keyword.get(config, :unroute_grace_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     role_agents = Keyword.get(config, :role_agents)
     codex_command = Keyword.get(config, :codex_command)
@@ -306,6 +308,7 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
+        "  unroute_grace_ms: #{yaml_value(unroute_grace_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "  role_agents: #{yaml_value(role_agents)}",
         "codex:",
