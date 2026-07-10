@@ -113,8 +113,9 @@ Operating rules:
 10. Rerun the full affected inventory and stop only at a clean pass or a blocked handoff.
 11. Use `sandbox_visible_exec` and the sandbox GUI/noVNC path for UI validation when the task is visual, interactive, demo-oriented, or real-user tested. Record transcript paths from `.symphony/visible-exec/` in the workpad.
 12. Ask before production access, sensitive data access, or destructive actions.
-13. If blocked by missing project auth, repo auth, secrets, hardware, missing `gh`, unauthenticated `gh`, or external services, document the exact blocker in the workpad, remove the active routing label when one is configured, and stop.
-14. Do not copy host credentials into the sandbox unless the project workflow explicitly requires it.
+13. Missing local validation tooling or routine development dependencies are not hard blockers by themselves. Before handoff, bootstrap documented tools inside the sandbox with project setup scripts, a package manager, or a user-level virtualenv; use CI only as a supplement unless local provisioning fails for a concrete reason the agent cannot fix.
+14. If blocked by missing project auth, repo auth, secrets, hardware, missing `gh`, unauthenticated `gh`, non-installable system packages, or external services, document the exact blocker in the workpad, remove the active routing label when one is configured, and stop.
+15. Do not copy host credentials into the sandbox unless the project workflow explicitly requires it.
 
 Canonical GitHub/OpenClaw behavior:
 
