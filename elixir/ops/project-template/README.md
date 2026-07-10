@@ -7,10 +7,33 @@ The intended runtime shape is:
 
 ```text
 one project instance -> one Symphony orchestrator process
-one Linear issue     -> one CUA sandbox container
+one tracker issue    -> one CUA sandbox container + one Discord thread
 Codex/OpenAI auth    -> host only
 project work         -> CUA sandbox via sandbox tools
+Discord thread       -> live workpad mirror + visual evidence (symphony_thread_post)
 ```
+
+## One-command GitHub onboarding (recommended)
+
+For GitHub-backed projects with the OpenClaw/Discord bridge, use the onboarding
+script instead of hand-editing an instance. It provisions the instance,
+creates the `symphony` + `openclaw-intake` labels, registers the Discord
+channel in the intake profiles (no gateway restart needed), enables the
+systemd unit, and waits for health:
+
+```bash
+cd /home/gavin/Developer/symphony/elixir
+ops/onboard-github-project.sh owner/repo --discord-channel <discord-channel-id>
+```
+
+Secrets come from `~/Service/symphony/onboard-defaults.env` (GITHUB_TOKEN, and
+optionally GH_TOKEN, SYMPHONY_ONBOARD_HOST, SYMPHONY_OPENCLAW_ACCOUNT). The
+OpenClaw Discord agent has a `symphony-onboarding` skill wrapping this script,
+so a project can be onboarded by asking the agent in Discord.
+
+The generated instance uses audited baseline sandbox/evidence contracts so it
+can start immediately; tighten them per-repo in `symphony.env` after the first
+issues.
 
 ## Create an Instance
 

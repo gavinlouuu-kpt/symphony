@@ -32,14 +32,15 @@ cua:
   wait_for_ssh: true
   launch_timeout_ms: @SYMPHONY_CUA_LAUNCH_TIMEOUT_MS@
   volumes: []
-  docker_args: []
+  docker_args: @SYMPHONY_CUA_DOCKER_ARGS@
 hooks:
+  # The extra line renders empty when no extra setup is configured; a bare
+  # if-block would be a bash syntax error with an empty body.
   after_create: |
     set -eu
+    if command -v gh >/dev/null 2>&1; then gh auth setup-git >/dev/null 2>&1 || true; fi
     git clone --depth 1 --branch "@SYMPHONY_SOURCE_REPO_BRANCH@" "@SYMPHONY_SOURCE_REPO_URL@" .
-    if [ -n "@SYMPHONY_AFTER_CREATE_EXTRA@" ]; then
-      @SYMPHONY_AFTER_CREATE_EXTRA@
-    fi
+    @SYMPHONY_AFTER_CREATE_EXTRA@
 sandbox_contract:
   enforced: @SYMPHONY_SANDBOX_CONTRACT_ENFORCED@
   audited: @SYMPHONY_SANDBOX_REQUIREMENTS_AUDITED@
@@ -61,6 +62,7 @@ evidence_contract:
 agent:
   max_concurrent_agents: @SYMPHONY_MAX_CONCURRENT_AGENTS@
   max_turns: @SYMPHONY_MAX_TURNS@
+  unroute_grace_ms: @SYMPHONY_UNROUTE_GRACE_MS@
   role_agents:
     - planner
     - generator
@@ -71,6 +73,9 @@ codex:
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy: null
+  # Long builds/browser sessions run as single silent tool calls; a short stall
+  # timeout kills healthy runs mid-build.
+  stall_timeout_ms: @SYMPHONY_CODEX_STALL_TIMEOUT_MS@
 observability:
   dashboard_enabled: true
 openclaw:
@@ -99,10 +104,13 @@ When you need to inspect, edit, run commands, or validate project code, use the 
 - `sandbox_read_file` for reading files from the CUA workspace.
 - `sandbox_write_file` for writing files into the CUA workspace.
 - `symphony_record_evidence` for running required validation commands that must count toward the configured handoff evidence contract.
+- `symphony_thread_post` for posting concise status updates and visual evidence into this issue's Discord thread when OpenClaw is enabled.
 - `linear_graphql` for Linear updates and issue context when this instance uses Linear.
 - For GitHub-backed workflows, use the `gh` CLI for issue/PR metadata and updates; keep project code commands inside the sandbox tools. Do not use approval-gated GitHub connector/MCP write tools in unattended workers.
 
 Do not use host-local shell commands or host-local file edits for project work unless explicitly instructed by Symphony.
+
+Container engines (docker/compose) are not available inside issue sandboxes by design. Treat missing `docker` as a validation-strategy signal, not an external blocker: run the affected app's dev server or build inside the sandbox and complete browser/runtime passes there via noVNC, citing the in-sandbox evidence.
 
 Issue:
 - Identifier: {{ issue.identifier }}
@@ -164,7 +172,10 @@ Canonical GitHub/OpenClaw behavior:
 - Remove only the active routing label when the PR is ready for human review, blocked on external input, or complete. Leave the issue open for normal review handoff and close it only after the configured merge/completion expectations are satisfied.
 - Do not remove the active routing label, mark ready for review, or close the issue until the workpad has distinct Planner, Generator, and Evaluator evidence.
 - Do not remove the active routing label, mark a PR ready, or close the issue until all declared evidence-contract checks are either passed with linked artifacts/commands or recorded as a true external blocker.
-- Discord/OpenClaw status belongs in one issue thread. `dispatch_started` creates or finds the thread; `role_agent_completed`, `agent_completed`, `issue_blocked`, and `retry_scheduled` post there. If the thread is missing or updates land in the parent channel, repair or backfill the thread and record the correction.
+- Symphony enforces this server-side: if the active routing label disappears while the evidence contract is unmet, the orchestrator restores the label, posts a corrective issue comment, and keeps the run going. When the label is removed with the contract satisfied, the orchestrator lets the in-flight role agent finish inside a grace window, then stops and cleans up the sandbox. Do not fight the restore; record the required evidence first.
+- Discord/OpenClaw status belongs in one issue thread. `dispatch_started` creates or finds the thread; `role_agent_completed`, `agent_completed`, `issue_blocked`, `retry_scheduled`, `issue_unrouted`, and `routing_label_restored` post there. If the thread is missing or updates land in the parent channel, repair or backfill the thread and record the correction.
+- Treat the issue's Discord thread as the live workpad mirror. At each role milestone (plan ready, implementation pushed, validation verdict, handoff), post a concise `symphony_thread_post` update summarizing the workpad delta so a human can follow the issue from Discord alone.
+- Post visual evidence to the thread with `symphony_thread_post` `media_path`: save a screenshot/photo/short recording under `.symphony/artifacts/` in the sandbox (for UI work capture the CUA desktop, e.g. `DISPLAY=:0 scrot .symphony/artifacts/<name>.png` or an equivalent tool, or copy test-produced screenshots) and attach it. UI-facing work must include at least one visual evidence post before handoff.
 
 Independent role-agent harness:
 
