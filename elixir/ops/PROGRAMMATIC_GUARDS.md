@@ -20,6 +20,7 @@ tracker state, or orchestrator checks before an LLM role agent starts work.
 | Auth-sensitive writes | Approval policy plus `gh`/CLI-only unattended write paths | Avoids approval-gated connector stalls in autonomous workers. |
 | PR/check readiness | Orchestrator or tracker gate over PR state and check runs | Prevents "looks done" handoff when required checks or review state are still unresolved. |
 | Workpad shape | Structured tracker comment or stored phase record | Makes Planner/Generator/Evaluator evidence machine-checkable. |
+| Runtime/demo evidence | `evidence_contract`, `symphony_record_evidence`, and sandbox handoff gate | Prevents health checks, mocks, CI, or stale screenshots from being treated as real runtime output. |
 
 ## Leave As Instructions
 
@@ -33,6 +34,7 @@ programmatic guardrails above.
 | Risk-based validation choice | Role agent | Tests vary by changed surface and acceptance criteria. |
 | Human-readable summaries | Role agent | Needs synthesis for issue comments, PRs, and Discord. |
 | Ambiguous requirements | Role agent plus human handoff | Requires clarifying questions or documented assumptions. |
+| Evidence command design | Planner/Evaluator | The exact command or artifact depends on the issue, but the declared contract and handoff gate should enforce that it was run and recorded. |
 
 ## Migration Rule
 

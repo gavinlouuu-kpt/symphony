@@ -117,6 +117,29 @@ or smoke path is expected for normal local development, make it part of the
 sandbox contract. Do not leave installable local dependencies such as `cmake`,
 Qt/PySide, OpenCV, HDF5 bindings, or test runners as per-issue blockers.
 
+## Evidence Requirements Audit
+
+Every project instance must also define its evidence contract before it is
+allowed to run. This is the minimum proof required before agents may mark a PR
+ready, merge, close an issue, or remove the active routing label.
+
+```bash
+SYMPHONY_EVIDENCE_CONTRACT_ENFORCED=true
+SYMPHONY_EVIDENCE_REQUIREMENTS_AUDITED=true
+SYMPHONY_EVIDENCE_REQUIRED_CHECKS='["caller-network /predict succeeds","real product screenshot captured"]'
+SYMPHONY_EVIDENCE_REQUIRED_ARTIFACTS='[".symphony/artifacts/label-studio-result.png"]'
+SYMPHONY_EVIDENCE_REQUIRED_COMMANDS='["curl -fsS http://backend:9090/predict -d @payload.json"]'
+SYMPHONY_EVIDENCE_REQUIREMENTS_NOTES="Health endpoints and parser tests do not prove runtime output."
+```
+
+Agents record required proof with the `symphony_record_evidence` dynamic tool,
+which runs the command in the CUA workspace and writes `.symphony/evidence-ledger.jsonl`.
+When the evidence contract is enforced, Symphony blocks handoff commands through
+the sandbox tools until the ledger satisfies the configured checks, commands,
+and artifact paths. The blocked commands include `gh pr ready`, `gh pr merge`,
+`gh issue close`, and removal of the active routing label. `gh pr ready --undo`
+is allowed so agents can move an invalid PR back to draft.
+
 ## Run With systemd User Services
 
 Install the user unit once:

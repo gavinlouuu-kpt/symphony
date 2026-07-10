@@ -426,6 +426,92 @@ defmodule SymphonyElixir.Config.Schema do
     defp present?(_value), do: false
   end
 
+  defmodule EvidenceContract do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    alias SymphonyElixir.Config.Schema
+
+    @primary_key false
+    embedded_schema do
+      field(:enforced, :boolean, default: false)
+      field(:audited, :boolean, default: false)
+      field(:required_checks, {:array, :string}, default: [])
+      field(:required_artifacts, {:array, :string}, default: [])
+      field(:required_commands, {:array, :string}, default: [])
+      field(:notes, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :enforced,
+          :audited,
+          :required_checks,
+          :required_artifacts,
+          :required_commands,
+          :notes
+        ],
+        empty_values: []
+      )
+      |> update_change(:required_checks, &Schema.normalize_string_list/1)
+      |> update_change(:required_artifacts, &Schema.normalize_string_list/1)
+      |> update_change(:required_commands, &Schema.normalize_string_list/1)
+      |> validate_enforced_contract()
+    end
+
+    defp validate_enforced_contract(changeset) do
+      case get_field(changeset, :enforced) do
+        true ->
+          changeset
+          |> require_audited()
+          |> require_any_requirement()
+
+        _ ->
+          changeset
+      end
+    end
+
+    defp require_audited(changeset) do
+      case get_field(changeset, :audited) do
+        true -> changeset
+        _ -> add_error(changeset, :audited, "must be true when evidence contract is enforced")
+      end
+    end
+
+    defp require_any_requirement(changeset) do
+      has_requirement? =
+        Enum.any?(
+          [
+            get_field(changeset, :required_checks, []),
+            get_field(changeset, :required_artifacts, []),
+            get_field(changeset, :required_commands, [])
+          ],
+          &(&1 != [])
+        ) ||
+          present?(get_field(changeset, :notes))
+
+      case has_requirement? do
+        true ->
+          changeset
+
+        false ->
+          add_error(
+            changeset,
+            :required_checks,
+            "must declare at least one evidence requirement or note when contract is enforced"
+          )
+      end
+    end
+
+    defp present?(value) when is_binary(value), do: String.trim(value) != ""
+    defp present?(_value), do: false
+  end
+
   defmodule Observability do
     @moduledoc false
     use Ecto.Schema
@@ -541,6 +627,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:sandbox_contract, SandboxContract, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:evidence_contract, EvidenceContract, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:openclaw, OpenClaw, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -654,6 +741,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:sandbox_contract, with: &SandboxContract.changeset/2)
+    |> cast_embed(:evidence_contract, with: &EvidenceContract.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:openclaw, with: &OpenClaw.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)

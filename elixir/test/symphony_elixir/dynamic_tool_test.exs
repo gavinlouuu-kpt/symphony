@@ -41,7 +41,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "sandbox_exec",
              "sandbox_visible_exec",
              "sandbox_read_file",
-             "sandbox_write_file"
+             "sandbox_write_file",
+             "symphony_record_evidence"
            ]
   end
 
@@ -76,7 +77,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "sandbox_exec",
              "sandbox_visible_exec",
              "sandbox_read_file",
-             "sandbox_write_file"
+             "sandbox_write_file",
+             "symphony_record_evidence"
            ]
   end
 
@@ -118,6 +120,222 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert trace =~ "-p 2222"
     assert trace =~ "/home/cua/workspace"
     assert trace =~ "printf ok"
+  end
+
+  test "sandbox_exec blocks handoff commands until evidence contract is satisfied" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      evidence_contract_enforced: true,
+      evidence_contract_audited: true,
+      evidence_contract_required_checks: ["real caller-network /predict succeeds"]
+    )
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dynamic-tool-handoff-gate-#{System.unique_integer([:positive])}"
+      )
+
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+
+    File.write!(Path.join(test_root, "ssh"), """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+    exit 1
+    """)
+
+    File.chmod!(Path.join(test_root, "ssh"), 0o755)
+    System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+    response =
+      DynamicTool.execute(
+        "sandbox_exec",
+        %{"command" => "gh pr ready 94 --repo owner/repo"},
+        sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"}
+      )
+
+    assert response["success"] == false
+
+    payload = Jason.decode!(response["output"])
+    assert get_in(payload, ["error", "message"]) =~ "Blocked handoff command"
+    assert get_in(payload, ["error", "missing"]) == [%{"check" => "real caller-network /predict succeeds"}]
+
+    trace = File.read!(trace_file)
+    assert trace =~ "evidence-ledger.jsonl"
+    refute trace =~ "gh pr ready 94"
+  end
+
+  test "sandbox_exec allows handoff commands after evidence contract is satisfied" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      evidence_contract_enforced: true,
+      evidence_contract_audited: true,
+      evidence_contract_required_checks: ["handoff review"],
+      evidence_contract_required_artifacts: [".symphony/artifacts/handoff-evidence.md"],
+      evidence_contract_required_commands: ["printf proof"]
+    )
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dynamic-tool-handoff-pass-#{System.unique_integer([:positive])}"
+      )
+
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    ledger =
+      Jason.encode!(%{
+        "check" => "handoff review",
+        "command" => "printf proof",
+        "status" => 0,
+        "artifacts" => [
+          %{"path" => ".symphony/artifacts/handoff-evidence.md", "exists" => true}
+        ]
+      })
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+
+    File.write!(Path.join(test_root, "ssh"), """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+    case "$*" in
+      *'cat .symphony/evidence-ledger.jsonl'*) printf '%s\\n' '#{ledger}'; exit 0 ;;
+      *'gh pr ready 94 --repo owner/repo'*) printf 'ready\\n'; exit 0 ;;
+      *) exit 1 ;;
+    esac
+    """)
+
+    File.chmod!(Path.join(test_root, "ssh"), 0o755)
+    System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+    response =
+      DynamicTool.execute(
+        "sandbox_exec",
+        %{"command" => "gh pr ready 94 --repo owner/repo"},
+        sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"}
+      )
+
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"status" => 0, "output" => "ready\n"}
+
+    trace = File.read!(trace_file)
+    assert trace =~ "evidence-ledger.jsonl"
+    assert trace =~ "gh pr ready 94"
+  end
+
+  test "symphony_record_evidence also blocks handoff commands when contract is unmet" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      evidence_contract_enforced: true,
+      evidence_contract_audited: true,
+      evidence_contract_required_checks: ["handoff review"]
+    )
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dynamic-tool-evidence-bypass-#{System.unique_integer([:positive])}"
+      )
+
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+
+    File.write!(Path.join(test_root, "ssh"), """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+    exit 1
+    """)
+
+    File.chmod!(Path.join(test_root, "ssh"), 0o755)
+    System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+    response =
+      DynamicTool.execute(
+        "symphony_record_evidence",
+        %{"check" => "handoff review", "command" => "gh pr ready 94 --repo owner/repo"},
+        sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"}
+      )
+
+    assert response["success"] == false
+    assert get_in(Jason.decode!(response["output"]), ["error", "message"]) =~ "Blocked handoff command"
+
+    trace = File.read!(trace_file)
+    assert trace =~ "evidence-ledger.jsonl"
+    refute trace =~ "gh pr ready 94"
+  end
+
+  test "symphony_record_evidence runs command and records artifact checks" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dynamic-tool-record-evidence-#{System.unique_integer([:positive])}"
+      )
+
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+
+    File.write!(Path.join(test_root, "ssh"), """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+    case "$*" in
+      *'test -e "$target"'*) exit 0 ;;
+      *'evidence-ledger.jsonl'*) printf 'recorded\\n'; exit 0 ;;
+      *) printf 'evidence output\\n'; exit 0 ;;
+    esac
+    """)
+
+    File.chmod!(Path.join(test_root, "ssh"), 0o755)
+    System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+    response =
+      DynamicTool.execute(
+        "symphony_record_evidence",
+        %{
+          "check" => "real caller-network /predict succeeds",
+          "command" => "printf evidence",
+          "artifacts" => ["artifacts/label-studio.png"]
+        },
+        sandbox_context: %{worker_host: "cua@127.0.0.1:2222", workspace: "/home/cua/workspace"}
+      )
+
+    assert response["success"] == true
+
+    payload = Jason.decode!(response["output"])
+    assert payload["status"] == 0
+    assert payload["output"] == "evidence output\n"
+
+    assert get_in(payload, ["evidence", "artifacts"]) == [
+             %{"path" => "artifacts/label-studio.png", "exists" => true}
+           ]
+
+    trace = File.read!(trace_file)
+    assert trace =~ "printf evidence"
+    assert trace =~ "evidence-ledger.jsonl"
   end
 
   test "sandbox_exec sanitizes non UTF-8 command output" do
@@ -479,7 +697,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert Jason.decode!(response["output"]) == %{
              "error" => %{
-               "message" => "Linear GraphQL tool execution failed.",
+               "message" => "Dynamic tool execution failed.",
                "reason" => ":boom"
              }
            }

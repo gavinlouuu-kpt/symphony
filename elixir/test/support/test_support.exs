@@ -150,6 +150,12 @@ defmodule SymphonyElixir.TestSupport do
           sandbox_contract_required_system_packages: [],
           sandbox_contract_bootstrap_check: nil,
           sandbox_contract_notes: nil,
+          evidence_contract_enforced: false,
+          evidence_contract_audited: false,
+          evidence_contract_required_checks: [],
+          evidence_contract_required_artifacts: [],
+          evidence_contract_required_commands: [],
+          evidence_contract_notes: nil,
           observability_enabled: true,
           observability_refresh_ms: 1_000,
           observability_render_interval_ms: 16,
@@ -234,6 +240,12 @@ defmodule SymphonyElixir.TestSupport do
     sandbox_contract_required_system_packages = Keyword.get(config, :sandbox_contract_required_system_packages)
     sandbox_contract_bootstrap_check = Keyword.get(config, :sandbox_contract_bootstrap_check)
     sandbox_contract_notes = Keyword.get(config, :sandbox_contract_notes)
+    evidence_contract_enforced = Keyword.get(config, :evidence_contract_enforced)
+    evidence_contract_audited = Keyword.get(config, :evidence_contract_audited)
+    evidence_contract_required_checks = Keyword.get(config, :evidence_contract_required_checks)
+    evidence_contract_required_artifacts = Keyword.get(config, :evidence_contract_required_artifacts)
+    evidence_contract_required_commands = Keyword.get(config, :evidence_contract_required_commands)
+    evidence_contract_notes = Keyword.get(config, :evidence_contract_notes)
     observability_enabled = Keyword.get(config, :observability_enabled)
     observability_refresh_ms = Keyword.get(config, :observability_refresh_ms)
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
@@ -314,6 +326,14 @@ defmodule SymphonyElixir.TestSupport do
           bootstrap_check: sandbox_contract_bootstrap_check,
           notes: sandbox_contract_notes
         }),
+        evidence_contract_yaml(%{
+          enforced: evidence_contract_enforced,
+          audited: evidence_contract_audited,
+          required_checks: evidence_contract_required_checks,
+          required_artifacts: evidence_contract_required_artifacts,
+          required_commands: evidence_contract_required_commands,
+          notes: evidence_contract_notes
+        }),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         openclaw_yaml(%{
           enabled: openclaw_enabled,
@@ -382,6 +402,20 @@ defmodule SymphonyElixir.TestSupport do
       "  required_python_modules: #{yaml_value(contract.required_python_modules)}",
       "  required_system_packages: #{yaml_value(contract.required_system_packages)}",
       block_entry("bootstrap_check", contract.bootstrap_check),
+      block_entry("notes", contract.notes)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp evidence_contract_yaml(contract) do
+    [
+      "evidence_contract:",
+      "  enforced: #{yaml_value(contract.enforced)}",
+      "  audited: #{yaml_value(contract.audited)}",
+      "  required_checks: #{yaml_value(contract.required_checks)}",
+      "  required_artifacts: #{yaml_value(contract.required_artifacts)}",
+      "  required_commands: #{yaml_value(contract.required_commands)}",
       block_entry("notes", contract.notes)
     ]
     |> Enum.reject(&is_nil/1)

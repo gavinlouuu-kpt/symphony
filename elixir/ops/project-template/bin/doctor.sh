@@ -59,6 +59,12 @@ SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODULES=${SYMPHONY_SANDBOX_REQUIRED_PYTHON_MODU
 SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES=${SYMPHONY_SANDBOX_REQUIRED_SYSTEM_PACKAGES:-[]}
 SYMPHONY_SANDBOX_BOOTSTRAP_CHECK=${SYMPHONY_SANDBOX_BOOTSTRAP_CHECK:-}
 SYMPHONY_SANDBOX_REQUIREMENTS_NOTES=${SYMPHONY_SANDBOX_REQUIREMENTS_NOTES:-}
+SYMPHONY_EVIDENCE_CONTRACT_ENFORCED=${SYMPHONY_EVIDENCE_CONTRACT_ENFORCED:-true}
+SYMPHONY_EVIDENCE_REQUIREMENTS_AUDITED=${SYMPHONY_EVIDENCE_REQUIREMENTS_AUDITED:-false}
+SYMPHONY_EVIDENCE_REQUIRED_CHECKS=${SYMPHONY_EVIDENCE_REQUIRED_CHECKS:-[]}
+SYMPHONY_EVIDENCE_REQUIRED_ARTIFACTS=${SYMPHONY_EVIDENCE_REQUIRED_ARTIFACTS:-[]}
+SYMPHONY_EVIDENCE_REQUIRED_COMMANDS=${SYMPHONY_EVIDENCE_REQUIRED_COMMANDS:-[]}
+SYMPHONY_EVIDENCE_REQUIREMENTS_NOTES=${SYMPHONY_EVIDENCE_REQUIREMENTS_NOTES:-}
 SYMPHONY_TRACKER_KIND=${SYMPHONY_TRACKER_KIND:-linear}
 case "$SYMPHONY_TRACKER_KIND" in
   github)
@@ -143,6 +149,55 @@ case "$SYMPHONY_SANDBOX_CONTRACT_ENFORCED" in
     ;;
   *)
     check_fail "invalid SYMPHONY_SANDBOX_CONTRACT_ENFORCED=$SYMPHONY_SANDBOX_CONTRACT_ENFORCED"
+    ;;
+esac
+
+case "$SYMPHONY_EVIDENCE_CONTRACT_ENFORCED" in
+  true)
+    check_ok "evidence contract enforcement enabled"
+
+    case "$SYMPHONY_EVIDENCE_REQUIREMENTS_AUDITED" in
+      true)
+        check_ok "evidence requirements audit marked complete"
+        ;;
+      false)
+        check_fail "evidence requirements audit is not complete; set SYMPHONY_EVIDENCE_REQUIREMENTS_AUDITED=true after declaring runtime/demo evidence requirements"
+        ;;
+      *)
+        check_fail "invalid SYMPHONY_EVIDENCE_REQUIREMENTS_AUDITED=$SYMPHONY_EVIDENCE_REQUIREMENTS_AUDITED"
+        ;;
+    esac
+
+    if has_config_value "$SYMPHONY_EVIDENCE_REQUIRED_CHECKS"; then
+      check_ok "evidence required check list declared"
+    else
+      check_warn "SYMPHONY_EVIDENCE_REQUIRED_CHECKS is empty"
+    fi
+
+    if has_config_value "$SYMPHONY_EVIDENCE_REQUIRED_ARTIFACTS"; then
+      check_ok "evidence required artifact list declared"
+    else
+      check_warn "SYMPHONY_EVIDENCE_REQUIRED_ARTIFACTS is empty"
+    fi
+
+    if has_config_value "$SYMPHONY_EVIDENCE_REQUIRED_COMMANDS"; then
+      check_ok "evidence required command list declared"
+    else
+      check_warn "SYMPHONY_EVIDENCE_REQUIRED_COMMANDS is empty"
+    fi
+
+    if ! has_config_value "$SYMPHONY_EVIDENCE_REQUIRED_CHECKS" \
+      && ! has_config_value "$SYMPHONY_EVIDENCE_REQUIRED_ARTIFACTS" \
+      && ! has_config_value "$SYMPHONY_EVIDENCE_REQUIRED_COMMANDS" \
+      && ! has_config_value "$SYMPHONY_EVIDENCE_REQUIREMENTS_NOTES"; then
+      check_fail "declare at least one evidence requirement or note after audit"
+    fi
+    ;;
+  false)
+    check_warn "evidence contract enforcement disabled; role agents may overclaim runtime/demo readiness"
+    ;;
+  *)
+    check_fail "invalid SYMPHONY_EVIDENCE_CONTRACT_ENFORCED=$SYMPHONY_EVIDENCE_CONTRACT_ENFORCED"
     ;;
 esac
 

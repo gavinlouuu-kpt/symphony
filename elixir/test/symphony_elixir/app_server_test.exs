@@ -363,7 +363,8 @@ defmodule SymphonyElixir.AppServerTest do
                "sandbox_exec",
                "sandbox_visible_exec",
                "sandbox_read_file",
-               "sandbox_write_file"
+               "sandbox_write_file",
+               "symphony_record_evidence"
              ]
     after
       File.rm_rf(test_root)

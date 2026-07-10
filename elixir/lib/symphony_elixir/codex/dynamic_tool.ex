@@ -3,13 +3,14 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{Linear.Client, SSH}
+  alias SymphonyElixir.{Config, Linear.Client, SSH}
 
   @linear_graphql_tool "linear_graphql"
   @sandbox_exec_tool "sandbox_exec"
   @sandbox_visible_exec_tool "sandbox_visible_exec"
   @sandbox_read_file_tool "sandbox_read_file"
   @sandbox_write_file_tool "sandbox_write_file"
+  @evidence_tool "symphony_record_evidence"
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
   """
@@ -24,6 +25,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   """
   @sandbox_write_file_description """
   Write a UTF-8 text file into the issue's CUA sandbox workspace, creating parent directories when needed.
+  """
+  @evidence_tool_description """
+  Run a required validation command inside the CUA sandbox and record it in Symphony's evidence ledger for gated PR handoff.
   """
   @linear_graphql_input_schema %{
     "type" => "object",
@@ -98,6 +102,26 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     }
   }
+  @evidence_tool_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["check", "command"],
+    "properties" => %{
+      "check" => %{
+        "type" => "string",
+        "description" => "Evidence check name. Use the exact configured evidence_contract.required_checks entry when one applies."
+      },
+      "command" => %{
+        "type" => "string",
+        "description" => "Shell command to run from the sandbox workspace."
+      },
+      "artifacts" => %{
+        "type" => ["array", "null"],
+        "description" => "Relative artifact paths that this command produced or verified.",
+        "items" => %{"type" => "string"}
+      }
+    }
+  }
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
@@ -116,6 +140,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
       @sandbox_write_file_tool ->
         execute_sandbox_write_file(arguments, opts)
+
+      @evidence_tool ->
+        execute_record_evidence(arguments, opts)
 
       other ->
         failure_response(%{
@@ -160,6 +187,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
             "name" => @sandbox_write_file_tool,
             "description" => @sandbox_write_file_description,
             "inputSchema" => @sandbox_write_file_input_schema
+          },
+          %{
+            "name" => @evidence_tool,
+            "description" => @evidence_tool_description,
+            "inputSchema" => @evidence_tool_input_schema
           }
         ]
     else
@@ -197,6 +229,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp execute_sandbox_exec(arguments, opts) do
     with {:ok, sandbox} <- sandbox_context(opts),
          {:ok, command} <- normalize_command(arguments),
+         :ok <- authorize_sandbox_command(command, sandbox),
          {:ok, {output, status}} <-
            SSH.run(
              sandbox.worker_host,
@@ -219,6 +252,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp execute_sandbox_visible_exec(arguments, opts) do
     with {:ok, sandbox} <- sandbox_context(opts),
          {:ok, command} <- normalize_command(arguments),
+         :ok <- authorize_sandbox_command(command, sandbox),
          {:ok, title} <- normalize_visible_title(arguments),
          {:ok, timeout_ms} <- normalize_visible_timeout_ms(arguments),
          {:ok, {output, status}} <-
@@ -232,6 +266,36 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         encode_payload(%{
           "status" => status,
           "output" => output
+        })
+      )
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp execute_record_evidence(arguments, opts) do
+    with {:ok, sandbox} <- sandbox_context(opts),
+         {:ok, check, command, artifacts} <- normalize_evidence_arguments(arguments),
+         :ok <- authorize_sandbox_command(command, sandbox),
+         {:ok, {output, status}} <-
+           SSH.run(
+             sandbox.worker_host,
+             "cd #{shell_escape(sandbox.workspace)} && #{command}",
+             stderr_to_stdout: true
+           ),
+         {:ok, artifact_results} <- inspect_evidence_artifacts(sandbox, artifacts),
+         :ok <- append_evidence_entry(sandbox, check, command, status, output, artifact_results) do
+      dynamic_tool_response(
+        status == 0,
+        encode_payload(%{
+          "status" => status,
+          "output" => output,
+          "evidence" => %{
+            "check" => check,
+            "command" => command,
+            "artifacts" => artifact_results
+          }
         })
       )
     else
@@ -390,6 +454,54 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp normalize_write_file_arguments(_arguments), do: {:error, :invalid_arguments}
+
+  defp normalize_evidence_arguments(arguments) when is_map(arguments) do
+    with {:ok, check} <- normalize_evidence_check(arguments),
+         {:ok, command} <- normalize_command(arguments),
+         {:ok, artifacts} <- normalize_evidence_artifacts(arguments) do
+      {:ok, check, command, artifacts}
+    end
+  end
+
+  defp normalize_evidence_arguments(_arguments), do: {:error, :invalid_arguments}
+
+  defp normalize_evidence_check(arguments) do
+    case Map.get(arguments, "check") || Map.get(arguments, :check) do
+      check when is_binary(check) ->
+        case String.trim(check) do
+          "" -> {:error, :missing_evidence_check}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _ ->
+        {:error, :missing_evidence_check}
+    end
+  end
+
+  defp normalize_evidence_artifacts(arguments) do
+    artifacts = Map.get(arguments, "artifacts") || Map.get(arguments, :artifacts) || []
+
+    cond do
+      is_nil(artifacts) ->
+        {:ok, []}
+
+      is_list(artifacts) ->
+        artifacts
+        |> Enum.reduce_while({:ok, []}, fn artifact, {:ok, acc} ->
+          case validate_relative_path(to_string(artifact)) do
+            {:ok, path} -> {:cont, {:ok, [path | acc]}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+        |> case do
+          {:ok, paths} -> {:ok, Enum.reverse(paths)}
+          {:error, reason} -> {:error, reason}
+        end
+
+      true ->
+        {:error, :invalid_evidence_artifacts}
+    end
+  end
 
   defp validate_relative_path(path) when is_binary(path) do
     trimmed = String.trim(path)
@@ -552,6 +664,32 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
+  defp tool_error_payload(:missing_evidence_check) do
+    %{
+      "error" => %{
+        "message" => "`symphony_record_evidence.check` must be a non-empty string."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_evidence_artifacts) do
+    %{
+      "error" => %{
+        "message" => "`symphony_record_evidence.artifacts` must be a list of relative sandbox paths."
+      }
+    }
+  end
+
+  defp tool_error_payload({:handoff_evidence_contract_failed, missing}) do
+    %{
+      "error" => %{
+        "message" =>
+          "Blocked handoff command: Symphony evidence_contract requirements are not satisfied. Use `symphony_record_evidence` to run the required real validation commands and record artifact paths before marking the PR ready, merging, closing the issue, or removing the active routing label.",
+        "missing" => missing
+      }
+    }
+  end
+
   defp tool_error_payload(:absolute_sandbox_path) do
     %{
       "error" => %{
@@ -605,7 +743,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp tool_error_payload(reason) do
     %{
       "error" => %{
-        "message" => "Linear GraphQL tool execution failed.",
+        "message" => "Dynamic tool execution failed.",
         "reason" => inspect(reason)
       }
     }
@@ -642,6 +780,209 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       action
     ]
     |> Enum.join("\n")
+  end
+
+  defp authorize_sandbox_command(command, sandbox) do
+    if handoff_command?(command) do
+      settings = Config.settings!()
+
+      case settings.evidence_contract.enforced do
+        true ->
+          case evidence_contract_satisfied?(settings.evidence_contract, sandbox) do
+            :ok -> :ok
+            {:error, missing} -> {:error, {:handoff_evidence_contract_failed, missing}}
+          end
+
+        _ ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp handoff_command?(command) when is_binary(command) do
+    normalized = String.downcase(command)
+
+    cond do
+      Regex.match?(~r/(^|[;&|()\s])gh\s+pr\s+ready(\s|$)/, normalized) and
+          not Regex.match?(~r/(^|\s)--undo(\s|$)/, normalized) ->
+        true
+
+      Regex.match?(~r/(^|[;&|()\s])gh\s+pr\s+merge(\s|$)/, normalized) ->
+        true
+
+      Regex.match?(~r/(^|[;&|()\s])gh\s+issue\s+close(\s|$)/, normalized) ->
+        true
+
+      Regex.match?(~r/(^|[;&|()\s])gh\s+issue\s+edit\b/, normalized) and
+          Regex.match?(~r/(^|\s)--remove-label(\s|=|$)/, normalized) ->
+        removes_active_routing_label?(normalized)
+
+      true ->
+        false
+    end
+  end
+
+  defp removes_active_routing_label?(normalized_command) do
+    active_labels =
+      Config.settings!().openclaw.intake_labels
+      |> Enum.map(&(String.trim(&1) |> String.downcase()))
+      |> Enum.reject(&(&1 == ""))
+
+    cond do
+      active_labels == [] ->
+        true
+
+      true ->
+        Enum.any?(active_labels, &String.contains?(normalized_command, &1))
+    end
+  end
+
+  defp evidence_contract_satisfied?(contract, sandbox) do
+    entries = read_evidence_entries(sandbox)
+
+    missing =
+      []
+      |> missing_required_checks(contract.required_checks, entries)
+      |> missing_required_commands(contract.required_commands, entries)
+      |> missing_required_artifacts(contract.required_artifacts, entries, sandbox)
+
+    case missing do
+      [] -> :ok
+      _ -> {:error, missing}
+    end
+  end
+
+  defp missing_required_checks(missing, required_checks, entries) do
+    successful_checks =
+      entries
+      |> Enum.filter(&successful_evidence?/1)
+      |> Enum.map(&Map.get(&1, "check"))
+      |> MapSet.new()
+
+    missing ++
+      Enum.flat_map(required_checks || [], fn check ->
+        if MapSet.member?(successful_checks, check), do: [], else: [%{"check" => check}]
+      end)
+  end
+
+  defp missing_required_commands(missing, required_commands, entries) do
+    successful_commands =
+      entries
+      |> Enum.filter(&successful_evidence?/1)
+      |> Enum.map(&Map.get(&1, "command"))
+      |> MapSet.new()
+
+    missing ++
+      Enum.flat_map(required_commands || [], fn command ->
+        if MapSet.member?(successful_commands, command), do: [], else: [%{"command" => command}]
+      end)
+  end
+
+  defp missing_required_artifacts(missing, required_artifacts, entries, sandbox) do
+    successful_artifacts =
+      entries
+      |> Enum.filter(&successful_evidence?/1)
+      |> Enum.flat_map(fn entry ->
+        entry
+        |> Map.get("artifacts", [])
+        |> Enum.filter(&(Map.get(&1, "exists") == true))
+        |> Enum.map(&Map.get(&1, "path"))
+      end)
+      |> MapSet.new()
+
+    missing ++
+      Enum.flat_map(required_artifacts || [], fn artifact ->
+        cond do
+          MapSet.member?(successful_artifacts, artifact) ->
+            []
+
+          sandbox_artifact_exists?(sandbox, artifact) ->
+            []
+
+          true ->
+            [%{"artifact" => artifact}]
+        end
+      end)
+  end
+
+  defp successful_evidence?(%{"status" => 0}), do: true
+  defp successful_evidence?(_entry), do: false
+
+  defp read_evidence_entries(sandbox) do
+    case SSH.run(
+           sandbox.worker_host,
+           "cd #{shell_escape(sandbox.workspace)} && cat .symphony/evidence-ledger.jsonl 2>/dev/null",
+           stderr_to_stdout: true
+         ) do
+      {:ok, {output, 0}} ->
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.flat_map(fn line ->
+          case Jason.decode(line) do
+            {:ok, %{} = entry} -> [entry]
+            _ -> []
+          end
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp inspect_evidence_artifacts(sandbox, artifacts) do
+    results =
+      Enum.map(artifacts, fn path ->
+        %{
+          "path" => path,
+          "exists" => sandbox_artifact_exists?(sandbox, path)
+        }
+      end)
+
+    {:ok, results}
+  end
+
+  defp sandbox_artifact_exists?(sandbox, path) do
+    case validate_relative_path(path) do
+      {:ok, safe_path} ->
+        case SSH.run(
+               sandbox.worker_host,
+               sandbox_file_script(sandbox.workspace, safe_path, "test -e \"$target\""),
+               stderr_to_stdout: true
+             ) do
+          {:ok, {_output, 0}} -> true
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp append_evidence_entry(sandbox, check, command, status, output, artifacts) do
+    entry =
+      %{
+        "tool" => @evidence_tool,
+        "recorded_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+        "check" => check,
+        "command" => command,
+        "status" => status,
+        "output_preview" => output |> to_string() |> String.slice(0, 4_000),
+        "artifacts" => artifacts
+      }
+
+    encoded = (Jason.encode!(entry) <> "\n") |> Base.encode64()
+
+    case SSH.run(
+           sandbox.worker_host,
+           "cd #{shell_escape(sandbox.workspace)} && mkdir -p .symphony && printf %s #{shell_escape(encoded)} | base64 -d >> .symphony/evidence-ledger.jsonl",
+           stderr_to_stdout: true
+         ) do
+      {:ok, {_output, 0}} -> :ok
+      {:ok, {output, status}} -> {:error, {:evidence_ledger_write_failed, status, output}}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp visible_exec_script(workspace, command, title, timeout_ms) do

@@ -93,6 +93,34 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "config accepts audited evidence contract requirements" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      evidence_contract_enforced: true,
+      evidence_contract_audited: true,
+      evidence_contract_required_checks: ["caller-network /predict succeeds"],
+      evidence_contract_required_artifacts: ["real Label Studio screenshot"],
+      evidence_contract_required_commands: ["curl /predict", "docker exec nvidia-smi"]
+    )
+
+    assert {:ok, settings} = Config.settings()
+    assert settings.evidence_contract.enforced == true
+    assert settings.evidence_contract.audited == true
+    assert settings.evidence_contract.required_checks == ["caller-network /predict succeeds"]
+    assert settings.evidence_contract.required_artifacts == ["real Label Studio screenshot"]
+    assert settings.evidence_contract.required_commands == ["curl /predict", "docker exec nvidia-smi"]
+  end
+
+  test "config rejects enforced evidence contract without audited requirements" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      evidence_contract_enforced: true,
+      evidence_contract_audited: false
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "audited"
+    assert message =~ "must declare at least one evidence requirement"
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(
